@@ -190,6 +190,199 @@ def elbow(
     return out
 
 
+def line(
+    points: list[tuple[float, float]], colour: str = "#1e1e1e", dashed: bool = False
+) -> list[dict[str, Any]]:
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    element = _base("line", xs[0], ys[0], max(xs) - min(xs), max(ys) - min(ys))
+    element.update(
+        {
+            "strokeColor": colour,
+            "points": [[px - xs[0], py - ys[0]] for px, py in points],
+            "startBinding": None,
+            "endBinding": None,
+            "startArrowhead": None,
+            "endArrowhead": None,
+            "strokeStyle": "dashed" if dashed else "solid",
+            "roundness": None,
+        }
+    )
+    return [element]
+
+
+# ------------------------------------------------------------- sequence scenes
+SEQ_TOP = 130
+SEQ_ROW = 70
+SEQ_PITCH = 320
+SEQ_ACTOR_W = 240
+
+KIND_COLOUR = {
+    "call": "#1e1e1e",
+    "return": "#5c5f66",
+    "model": PALETTE["llm"][0],
+    "data": PALETTE["store"][0],
+}
+
+
+def sequence(
+    title: str,
+    subtitle: str,
+    actors: list[tuple[str, str]],
+    messages: list[tuple[int, int, str, str]],
+    footnote: str = "",
+) -> list[dict[str, Any]]:
+    """Lifelines and messages, drawn from the same primitives as the other scenes."""
+    e: list[dict[str, Any]] = [
+        text(title, 40, 24, size=24),
+        text(subtitle, 40, 60, size=14, colour="#5c5f66"),
+    ]
+
+    centres: list[float] = []
+    for index, (label, style) in enumerate(actors):
+        x = 40 + index * SEQ_PITCH
+        e += box(label, x, SEQ_TOP, SEQ_ACTOR_W, 64, style, size=14)
+        centres.append(x + SEQ_ACTOR_W / 2)
+
+    head = SEQ_TOP + 64
+    bottom = head + SEQ_ROW * (len(messages) + 1)
+    for centre in centres:
+        e += line([(centre, head), (centre, bottom)], colour="#adb5bd", dashed=True)
+
+    for index, (src, dst, label, kind) in enumerate(messages):
+        y = head + SEQ_ROW * (index + 1)
+        colour = KIND_COLOUR.get(kind, "#1e1e1e")
+        dashed = kind == "return"
+        lines = label.split("\n")
+        width = max(len(line_text) for line_text in lines) * 12 * 0.58
+
+        if src == dst:
+            centre = centres[src]
+            e += line([(centre, y), (centre + 90, y), (centre + 90, y + 28)], colour=colour)
+            e += arrow(centre + 90, y + 28, centre + 4, y + 28, colour=colour)
+            e.append(text(label, centre + 104, y + 4, size=12, colour=colour))
+            continue
+
+        x1, x2 = centres[src], centres[dst]
+        e += arrow(x1, y, x2, y, colour=colour, dashed=dashed)
+        e.append(
+            text(
+                label,
+                (x1 + x2) / 2 - width / 2,
+                y - 14 - len(lines) * 12 * LINE_HEIGHT,
+                size=12,
+                colour=colour,
+            )
+        )
+
+    if footnote:
+        e.append(text(footnote, 40, bottom + 30, size=13, colour="#c92a2a"))
+    return e
+
+
+# ----------------------------------------------------------------- SVG export
+# GitHub renders SVG inside Markdown but will not render .excalidraw JSON, so
+# every scene is written both ways: the JSON stays editable, the SVG is what the
+# README shows. Excalidraw's hand-drawn roughness is not reproduced here.
+_SVG_FONT = "ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"
+
+
+def _esc(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _abs_points(element: dict[str, Any]) -> list[tuple[float, float]]:
+    return [(element["x"] + px, element["y"] + py) for px, py in element["points"]]
+
+
+def _bounds(elements: list[dict[str, Any]]) -> tuple[float, float, float, float]:
+    xs: list[float] = []
+    ys: list[float] = []
+    for element in elements:
+        if element["type"] in ("arrow", "line"):
+            for px, py in _abs_points(element):
+                xs.append(px)
+                ys.append(py)
+        else:
+            xs += [element["x"], element["x"] + element["width"]]
+            ys += [element["y"], element["y"] + element["height"]]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _svg_element(element: dict[str, Any]) -> str:
+    stroke = element["strokeColor"]
+    dash = ' stroke-dasharray="8 6"' if element.get("strokeStyle") == "dashed" else ""
+
+    if element["type"] == "rectangle":
+        fill = element["backgroundColor"]
+        return (
+            f'<rect x="{element["x"]:.1f}" y="{element["y"]:.1f}" '
+            f'width="{element["width"]:.1f}" height="{element["height"]:.1f}" '
+            f'rx="{12 if element.get("roundness") else 0}" '
+            f'fill="{"none" if fill == "transparent" else fill}" stroke="{stroke}" '
+            f'stroke-width="{element["strokeWidth"]}"{dash}/>'
+        )
+
+    if element["type"] in ("arrow", "line"):
+        points = " ".join(f"{px:.1f},{py:.1f}" for px, py in _abs_points(element))
+        head = f' marker-end="url(#a{stroke.lstrip("#")})"' if element.get("endArrowhead") else ""
+        return (
+            f'<polyline points="{points}" fill="none" stroke="{stroke}" '
+            f'stroke-width="{element["strokeWidth"]}" stroke-linecap="round" '
+            f'stroke-linejoin="round"{dash}{head}/>'
+        )
+
+    if element["type"] == "text":
+        size = element["fontSize"]
+        anchor = {"center": "middle", "right": "end"}.get(element["textAlign"], "start")
+        if anchor == "middle":
+            x = element["x"] + element["width"] / 2
+        elif anchor == "end":
+            x = element["x"] + element["width"]
+        else:
+            x = element["x"]
+        spans = []
+        for index, body in enumerate(element["text"].split("\n")):
+            y = element["y"] + size * 0.92 + index * size * LINE_HEIGHT
+            spans.append(
+                f'<text x="{x:.1f}" y="{y:.1f}" fill="{stroke}" font-size="{size}" '
+                f'font-family="{_SVG_FONT}" text-anchor="{anchor}">{_esc(body)}</text>'
+            )
+        return "".join(spans)
+
+    return ""
+
+
+def to_svg(elements: list[dict[str, Any]]) -> str:
+    pad = 36
+    min_x, min_y, max_x, max_y = _bounds(elements)
+    width = max_x - min_x + pad * 2
+    height = max_y - min_y + pad * 2
+
+    colours = sorted(
+        {
+            element["strokeColor"]
+            for element in elements
+            if element["type"] == "arrow" and element.get("endArrowhead")
+        }
+    )
+    markers = "".join(
+        f'<marker id="a{colour.lstrip("#")}" viewBox="0 0 10 10" refX="9" refY="5" '
+        f'markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+        f'<path d="M0,0 L10,5 L0,10 z" fill="{colour}"/></marker>'
+        for colour in colours
+    )
+    body = "".join(_svg_element(element) for element in elements)
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{height:.0f}" '
+        f'viewBox="{min_x - pad:.1f} {min_y - pad:.1f} {width:.1f} {height:.1f}">'
+        f"<defs>{markers}</defs>"
+        f'<rect x="{min_x - pad:.1f}" y="{min_y - pad:.1f}" width="{width:.1f}" '
+        f'height="{height:.1f}" fill="#ffffff"/>'
+        f"{body}</svg>\n"
+    )
+
+
 def scene(elements: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "type": "excalidraw",
@@ -204,7 +397,9 @@ def scene(elements: list[dict[str, Any]]) -> dict[str, Any]:
 def write(name: str, elements: list[dict[str, Any]]) -> None:
     path = OUT / f"{name}.excalidraw"
     path.write_text(json.dumps(scene(elements), indent=2), encoding="utf-8")
-    print(f"wrote {path.relative_to(OUT.parent.parent)}")
+    svg = OUT / f"{name}.svg"
+    svg.write_text(to_svg(elements), encoding="utf-8")
+    print(f"wrote {path.relative_to(OUT.parent.parent)} + {svg.name}")
 
 
 # --------------------------------------------------------------- 1. system
@@ -213,8 +408,8 @@ def system_architecture() -> list[dict[str, Any]]:
     e.append(text("Alfresco Curator — deployment", 40, 24, size=24))
     e.append(
         text(
-            "Nine containers. The Curator never writes to the repository;"
-            " it reads, probes and explains.",
+            "Ten services, one compose file. Reads and probes run freely;"
+            " every write is approved first.",
             40,
             60,
             size=14,
@@ -222,49 +417,48 @@ def system_architecture() -> list[dict[str, Any]]:
         )
     )
 
-    e += box("Browser\nAlfresco Share UI", 40, 120, 200, 76, "external")
-    e += box("Share 26.2\n:8180  (iframe host)", 300, 120, 220, 76, "external")
-    e += box("Curator API\nFastAPI :8600", 300, 260, 220, 76, "service")
-    e += box("LLM gateway\nOpenAI-compatible", 40, 260, 200, 76, "llm")
+    # Clients and the model on the left, the platform in one column on the
+    # right, so no connector has to cut across a box.
+    e += box("Browser", 40, 130, 200, 76, "external")
+    e += box("LLM gateway\nOpenAI-compatible", 40, 420, 200, 76, "llm")
 
-    e += box("Alfresco Repository\nACS 26.3  :8080", 620, 120, 240, 76, "external")
-    e += box("Elasticsearch 8.17\n:9200", 620, 260, 240, 76, "store")
-    e += box("Batch indexer 5.8\nactuator :8081", 620, 400, 240, 76, "external")
-    e += box("ActiveMQ 6.2\nJolokia :8161", 620, 540, 240, 76, "external")
-    e += box("PostgreSQL 17\n:5432", 940, 120, 200, 76, "store")
-    e += box("Transform core AIO\n:8090", 940, 540, 200, 76, "external")
+    e += box("Share 26.3\n:8180 · page + launcher", 300, 90, 250, 76, "external")
+    e += box("Digital Workspace 8.1\n:8280 · launcher injected", 300, 200, 250, 76, "external")
+    e += box("Curator API\nFastAPI :8600", 300, 420, 250, 76, "service")
 
-    e += arrow(240, 158, 300, 158, "HTTPS")
-    e += arrow(410, 196, 410, 260, "iframe + ticket")
-    e += arrow(300, 298, 240, 298, "translate / explain", PALETTE["llm"][0])
+    e += box("Alfresco Repository\nACS 26.3  :8080", 700, 90, 260, 76, "external")
+    e += box("ActiveMQ 6.2\nJolokia :8161", 700, 230, 260, 76, "external")
+    e += box("Transform core AIO\n:8090", 700, 370, 260, 76, "external")
+    e += box("Elasticsearch 8.17\n:9200", 700, 510, 260, 76, "store")
+    e += box("Batch indexer 5.8\nactuator :8081", 700, 650, 260, 76, "external")
+    e += box("PostgreSQL 17\n:5432", 1060, 90, 220, 76, "store")
 
-    e += arrow(520, 290, 620, 180, "REST v1  search, nodes, ACL")
-    e += arrow(520, 300, 620, 300, "_doc, _analyze, _count", PALETTE["store"][0])
-    e += arrow(520, 320, 620, 430, "/actuator/metrics")
-    e += arrow(520, 330, 620, 570, "queue depth")
+    e += arrow(240, 158, 300, 128, "HTTPS", label_at=(232, 96))
+    e += arrow(240, 180, 300, 238)
 
-    e += arrow(860, 158, 940, 158, "JDBC")
-    e += arrow(740, 400, 740, 336, "writes index", PALETTE["store"][0], label_at=(752, 352))
-    # Routed down the left of Elasticsearch rather than through it.
-    e += arrow(580, 196, 580, 438)
-    e += arrow(580, 438, 620, 438)
-    e.append(text("polls the DB\nevery 15s", 496, 300, size=12, colour="#1e1e1e"))
-    e += arrow(640, 196, 580, 196)
-    e += arrow(860, 578, 940, 578, "transform")
+    e += arrow(400, 166, 400, 420, "iframe + ticket", label_at=(338, 280))
+    e += arrow(470, 276, 470, 420)
 
-    e.append(
-        text(
-            "Indexing polls the database. ActiveMQ carries transform/rendition\n"
-            "traffic only — a backlog there stops full text being extracted,\n"
-            "but it is NOT on the indexing path.",
-            620,
-            650,
-            size=13,
-            colour="#c92a2a",
-        )
-    )
+    e += arrow(300, 458, 244, 458)
+    e.append(text("translate · explain · rank", 40, 386, size=12, colour=PALETTE["llm"][0]))
 
-    e.append(text("Legend", 40, 400, size=16))
+    # Each label sits above its own target, which keeps the fan-out readable.
+    e += arrow(550, 440, 700, 130)
+    e.append(text("REST v1 — search, nodes, ACL", 700, 62, size=12))
+    e += arrow(550, 450, 700, 270)
+    e.append(text("queue depth", 700, 202, size=12))
+    e += arrow(550, 465, 700, 548)
+    e.append(text("_doc · _analyze · _count", 700, 482, size=12, colour=PALETTE["store"][0]))
+    e += arrow(550, 475, 700, 688)
+    e.append(text("/actuator/metrics", 700, 622, size=12))
+
+    e += arrow(960, 128, 1060, 128, "JDBC", label_at=(986, 104))
+    e += arrow(830, 166, 830, 230, "content events", label_at=(844, 186))
+    e += arrow(830, 306, 830, 370, "transform requests", label_at=(844, 326))
+    e += arrow(830, 650, 830, 586, "writes the index", PALETTE["store"][0], label_at=(844, 606))
+    e += elbow(960, 690, 1010, 170, "polls the database every 15s", label_at=(974, 664))
+
+    e.append(text("Legend", 40, 528, size=16))
     for index, (style, caption) in enumerate(
         [
             ("service", "our service"),
@@ -273,7 +467,19 @@ def system_architecture() -> list[dict[str, Any]]:
             ("llm", "model call"),
         ]
     ):
-        e += box(caption, 40, 432 + index * 56, 200, 44, style, size=13)
+        e += box(caption, 40, 560 + index * 56, 200, 44, style, size=13)
+
+    e.append(
+        text(
+            "Indexing polls the database. ActiveMQ carries transform and rendition traffic\n"
+            "only — a backlog there starves full-text extraction, but it is NOT on the\n"
+            "indexing path, and the report is not allowed to claim otherwise.",
+            700,
+            770,
+            size=13,
+            colour="#c92a2a",
+        )
+    )
     return e
 
 
@@ -490,8 +696,82 @@ def search_flow() -> list[dict[str, Any]]:
     return e
 
 
+# --------------------------------------------------- 5. one ask, answered
+def ask_sequence() -> list[dict[str, Any]]:
+    actors = [
+        ("Panel\nbrowser", "external"),
+        ("Curator API\nFastAPI", "service"),
+        ("Router\nintent.py", "decision"),
+        ("Ladder\ngraph.py", "deterministic"),
+        ("LLM\ngateway", "llm"),
+        ("Alfresco\nSearch API", "external"),
+    ]
+    messages = [
+        (0, 1, "POST /api/agent/ask/stream", "call"),
+        (1, 2, "classify(prompt) — lexical, no model", "call"),
+        (2, 1, "route = search, writes = false", "return"),
+        (1, 0, "event: route — the badge appears before any search runs", "return"),
+        (1, 3, "run(prompt)", "call"),
+        (3, 4, "translate to AFTS", "model"),
+        (4, 3, 'TYPE:"cm:content" AND TEXT:"unpaid"', "return"),
+        (3, 5, "POST /search — as the signed-in user", "data"),
+        (5, 3, "2 hits", "return"),
+        (1, 0, "event: step — plan, search", "return"),
+        (3, 4, "write the report from the evidence", "model"),
+        (4, 0, "event: token — the report grows a word at a time", "return"),
+        (1, 0, "payload + done", "return"),
+    ]
+    return sequence(
+        "One ask, answered",
+        "The route is decided before any engine runs, so the panel can say what it is about to do.",
+        actors,
+        messages,
+        "The model is called twice, and both times it is handed evidence that was\n"
+        "already gathered. It never decides what to probe, so the same question\n"
+        "yields the same investigation.",
+    )
+
+
+# ------------------------------------------- 6. a change, approved and undoable
+def act_sequence() -> list[dict[str, Any]]:
+    actors = [
+        ("Panel\nbrowser", "external"),
+        ("Curator API\nFastAPI", "service"),
+        ("Router\nintent.py", "decision"),
+        ("Deep agent\ndeep.py", "llm"),
+        ("Alfresco\nREST v1", "external"),
+        ("Audit log\nactions.py", "store"),
+    ]
+    messages = [
+        (0, 1, '"tag every unpaid invoice as overdue"', "call"),
+        (1, 2, "classify(prompt)", "call"),
+        (2, 1, "route = act, writes = true", "return"),
+        (1, 3, "build with write tools + approval gate", "call"),
+        (3, 4, "search for unpaid invoices", "data"),
+        (4, 3, "2 nodes", "return"),
+        (3, 1, "interrupt — proposed add_tag on 2 nodes", "return"),
+        (1, 0, "approval card — nothing has changed yet", "return"),
+        (0, 1, "approve", "call"),
+        (1, 3, "resume", "call"),
+        (3, 4, "add_tag", "data"),
+        (3, 5, "record the inverse: remove_tag", "call"),
+        (1, 0, "done — undoable for the rest of the session", "return"),
+    ]
+    return sequence(
+        "A change, approved and undoable",
+        "Writes are refused unless the router asked for them, and every change"
+        " records how to put it back.",
+        actors,
+        messages,
+        "The budget is charged before the call, so a refused change costs nothing and a failing\n"
+        "tool cannot walk past the limit by retrying.",
+    )
+
+
 if __name__ == "__main__":
     write("01-system-architecture", system_architecture())
     write("02-agent-state-machine", agent_state_machine())
     write("03-diagnostic-layers", diagnostic_layers())
     write("04-search-flow", search_flow())
+    write("05-ask-sequence", ask_sequence())
+    write("06-act-sequence", act_sequence())
