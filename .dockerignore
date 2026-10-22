@@ -1,0 +1,16 @@
+.git
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.egg-info
+# docker/ and share-ui/ stay in the context: the Share image is built from
+# docker/share/Dockerfile and layers share-ui/ onto stock Share. Both builds
+# share this context, and the Curator image copies only what it names, so
+# carrying a few KB of text files costs it nothing.
+tests
+.env

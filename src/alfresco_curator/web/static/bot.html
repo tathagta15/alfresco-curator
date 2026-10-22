@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Curator</title>
+<link rel="stylesheet" href="/static/bot.css" />
+</head>
+<body>
+
+<!-- A rail beside the conversation on a wide screen, a drawer over it in the
+     dock. Same markup either way, so there is one history list to maintain. -->
+<div class="shell">
+
+<aside class="rail" id="rail">
+  <div class="rail-top">
+    <button id="newBtn" class="new-chat" type="button">
+      <span aria-hidden="true">+</span> New chat
+    </button>
+    <button id="railClose" class="icon-btn rail-close" type="button" aria-label="Close history">&times;</button>
+  </div>
+
+  <div class="rail-section">Recent</div>
+  <nav class="rail-list" id="historyList" aria-label="Recent conversations"></nav>
+
+  <!-- Doubles as the feature tour: each one names something the Curator can
+       do that a first-time user would not think to ask for. -->
+  <div class="rail-section">Quests</div>
+  <ul class="quests" id="quests"></ul>
+
+  <div class="xp-bar" id="xpBar" title="Progress to the next rank">
+    <div class="xp-fill" id="xpFill"></div>
+    <span class="xp-text" id="xpText">0 XP</span>
+  </div>
+</aside>
+
+<div class="panel">
+
+<header class="bot-head">
+  <button id="railBtn" class="icon-btn rail-toggle" type="button" title="Conversations" aria-label="Conversations">&#9776;</button>
+
+  <!-- The XP ring doubles as the avatar frame, so progress costs no extra row. -->
+  <div class="avatar-wrap">
+    <svg class="ring" viewBox="0 0 44 44" aria-hidden="true">
+      <circle class="ring-track" cx="22" cy="22" r="19" />
+      <circle class="ring-fill" id="xpRing" cx="22" cy="22" r="19" />
+    </svg>
+    <div class="avatar" id="avatar" data-mood="idle">
+      <span class="eye left"></span><span class="eye right"></span>
+    </div>
+    <span class="level" id="level" title="Level">1</span>
+  </div>
+
+  <div class="who">
+    <div class="name">Curator<span class="rank" id="rank">Rookie</span></div>
+    <!-- Says what this is for. The status line replaces it while working, so
+         the same row carries the purpose and then the progress. -->
+    <div class="state" id="state">Ask anything about your content</div>
+  </div>
+
+  <!-- Reports the route the server chose. Not a control: whether a request
+       reads or writes is a property of the request, not a setting. -->
+  <span id="routeBadge" class="route" hidden></span>
+  <button id="expandBtn" class="icon-btn" title="Open the full screen" aria-label="Open the full screen">&#x2922;</button>
+</header>
+
+<div class="scoreboard" id="scoreboard" hidden>
+  <div class="score" title="Documents found"><span id="scoreFound">0</span><em>found</em></div>
+  <div class="score" title="Zero-hit searches explained"><span id="scoreSolved">0</span><em>explained</em></div>
+  <div class="score" title="Probes and actions run"><span id="scoreProbes">0</span><em>probes</em></div>
+  <div class="score done" title="Changes you approved"><span id="scoreApplied">0</span><em>applied</em></div>
+</div>
+
+<main id="log" class="log" aria-live="polite"></main>
+
+<!-- Milestones announce themselves here rather than in the transcript, so the
+     conversation stays readable afterwards. -->
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<div class="suggestions" id="suggestions"></div>
+
+<!-- What the page can see. Shown so the grounding is visible rather than magic. -->
+<div class="context-row"><span id="contextChip" class="context" hidden></span></div>
+
+<form class="composer" id="composer" autocomplete="off">
+  <!-- A textarea, because an instruction to an agent is often a sentence or
+       three. Enter sends; Shift+Enter breaks the line. -->
+  <textarea id="prompt" rows="1" placeholder="Ask me anything about your content&hellip;" aria-label="Ask the Curator"></textarea>
+  <button id="send" class="send" type="submit" title="Send" aria-label="Send">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z"/></svg>
+  </button>
+</form>
+
+</div><!-- /panel -->
+</div><!-- /shell -->
+
+<script src="/static/bot.js"></script>
+</body>
+</html>

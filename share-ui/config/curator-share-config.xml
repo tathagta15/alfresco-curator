@@ -1,0 +1,42 @@
+<!-- Alfresco Curator - Share integration.
+
+     Injected into share-config-custom.xml by scripts/build_share_extension.ps1.
+     Everything between the CURATOR markers is regenerated, so edit this file
+     rather than the generated one. {curatorUrl} is substituted at build time.
+
+     The document library action targets the in-Share Curator page rather than
+     the standalone app, so the user never leaves Share and never signs in
+     twice: the page hands the Curator the current Alfresco ticket.
+     {node.nodeRef} is substituted by Share with the selected document. -->
+   <!-- CURATOR:BEGIN -->
+   <config evaluator="string-compare" condition="Curator">
+      <curator>
+         <!-- Where the Curator service is reachable from the user's browser. -->
+         <url>{curatorUrl}</url>
+      </curator>
+   </config>
+
+   <config evaluator="string-compare" condition="DocLibActions">
+      <actions>
+         <action id="curator-diagnose"
+                 type="link"
+                 label="actions.curator.diagnose"
+                 icon="document-view-details">
+            <param name="href">/share/page/curator?node={node.nodeRef}</param>
+            <param name="target">_self</param>
+            <evaluator negate="true">evaluator.doclib.action.isFolder</evaluator>
+         </action>
+      </actions>
+      <actionGroups>
+         <actionGroup id="document-browse">
+            <action index="500" id="curator-diagnose" />
+         </actionGroup>
+         <actionGroup id="document-details">
+            <action index="500" id="curator-diagnose" />
+         </actionGroup>
+         <actionGroup id="document-details-alt">
+            <action index="500" id="curator-diagnose" />
+         </actionGroup>
+      </actionGroups>
+   </config>
+   <!-- CURATOR:END -->

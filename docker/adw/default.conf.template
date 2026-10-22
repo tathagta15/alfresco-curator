@@ -1,0 +1,56 @@
+# Replaces the stock server block so the repository is reachable same-origin.
+#
+# ADW and the repository are separate origins in this compose, and the
+# repository sends no CORS headers, so a browser refuses the sign-in call.
+# Proxying /alfresco through this server removes the cross-origin hop
+# entirely, which is how Alfresco deploys the Workspace behind one gateway.
+#
+# The Curator launcher is injected here too, because sub_filter has to sit
+# where the HTML is served.
+server {
+    listen       8080;
+    server_name  localhost;
+    root /usr/share/nginx/html;
+    absolute_redirect off;
+    server_tokens off;
+
+    location / {
+        # Stock ADW adds the trailing slash so Angular's router resolves deep
+        # links. It must stay scoped to the app: at server level it also
+        # rewrote extension-less API paths such as .../tickets, turning the
+        # sign-in POST into a redirected GET and yielding a bogus 401.
+        rewrite ^([^.]*[^/])$ $1/ permanent;
+
+        root   /usr/share/nginx/html;
+        index  index.html index.htm;
+        try_files $uri $uri/ /index.html;
+
+        sub_filter_once on;
+        sub_filter_types text/html;
+        sub_filter '</body>' '<script src="${CURATOR_URL}/static/adw-bot.js" defer></script></body>';
+    }
+
+    location ~ /app.config.json {
+        alias  /etc/nginx/conf.d/app.config.json;
+    }
+
+    location ~ /assets/plugins/custom.modeled.extension.json {
+        alias  /etc/nginx/conf.d/custom.modeled.extension.json;
+    }
+
+    location /alfresco/ {
+        proxy_pass         ${REPO_URL}/alfresco/;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Forwarded-Host $host;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   X-Real-IP $remote_addr;
+        # Uploads and downloads go through here, so no body cap.
+        client_max_body_size 0;
+        proxy_read_timeout 300s;
+    }
+
+    error_page   500 502 503 504  /50x.html;
+    location = /50x.html {
+        root   /usr/share/nginx/html;
+    }
+}

@@ -1,0 +1,9 @@
+* text=auto
+
+# These run inside Linux containers. A CRLF checkout on Windows, which is the
+# Git-for-Windows default, turns the shebang into `#!/bin/sh\r` and the
+# container exits with a "no such file or directory" that names a file that
+# plainly exists.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.template text eol=lf

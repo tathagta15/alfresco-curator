@@ -1,0 +1,28 @@
+<extension>
+   <modules>
+      <module>
+         <id>Curator header item</id>
+         <version>1.0</version>
+         <auto-deploy>true</auto-deploy>
+         <customizations>
+            <customization>
+               <targetPackageRoot>org.alfresco.share.header</targetPackageRoot>
+               <sourcePackageRoot>com.curator.header</sourcePackageRoot>
+            </customization>
+         </customizations>
+      </module>
+      <module>
+         <id>Curator floating assistant</id>
+         <version>1.0</version>
+         <auto-deploy>true</auto-deploy>
+         <customizations>
+            <!-- The footer renders on every Share template, which is what
+                 makes it the hook for a site-wide launcher. -->
+            <customization>
+               <targetPackageRoot>org.alfresco.components.footer</targetPackageRoot>
+               <sourcePackageRoot>com.curator.footer</sourcePackageRoot>
+            </customization>
+         </customizations>
+      </module>
+   </modules>
+</extension>

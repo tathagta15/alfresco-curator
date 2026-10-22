@@ -1,0 +1,602 @@
+:root {
+  --bg: #ffffff;
+  --surface: #f6f8fa;
+  --sunken: #eef1f5;
+  --border: #e3e8ee;
+  --text: #1b2127;
+  --muted: #68727e;
+  --accent: #1f7ae0;
+  --accent-deep: #1559a8;
+  --accent-soft: #e9f2fd;
+  --ok: #10893e;
+  --ok-soft: #e7f6ec;
+  --warn: #d9480f;
+  --warn-soft: #fff3e8;
+  --fail: #c92a2a;
+  --fail-soft: #fdecec;
+  --gold: #f0a500;
+  --mono: "Cascadia Code", Consolas, Monaco, monospace;
+
+  /* One spacing and radius scale, so nothing is eyeballed. */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px;
+  --r1: 8px; --r2: 12px; --r3: 16px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .04);
+  --shadow-lift: 0 4px 12px rgba(16, 24, 40, .10);
+}
+
+* { box-sizing: border-box; }
+
+/* Any `display` on a class outranks the hidden attribute's own `display:none`,
+   which left an empty scoreboard and a stray route pill on screen. Settling it
+   once here is what stops the next element from inheriting the same bug. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0; height: 100%;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: var(--bg); color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+/* The toast layer is positioned against the panel, not the log, so a toast
+   never scrolls away mid-animation. */
+body { position: relative; overflow: hidden; }
+
+.shell { display: flex; height: 100%; min-height: 0; }
+.panel { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+/* ------------------------------------------------------------------ rail */
+/* A drawer over the conversation by default, because the dock has no width to
+   spare. The wide layout turns it into a permanent column. */
+.rail {
+  position: absolute; inset: 0 auto 0 0; z-index: 20;
+  width: 260px; max-width: 86%;
+  background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: var(--s2);
+  padding: var(--s3);
+  transform: translateX(-102%);
+  transition: transform 220ms cubic-bezier(.2, .9, .3, 1);
+  box-shadow: 8px 0 24px rgba(16, 24, 40, .12);
+  /* A short dock - the panel caps at the window height - cannot hold the whole
+     rail, and the quests and progress bar would simply fall off the bottom. */
+  overflow-y: auto;
+}
+.rail.open { transform: none; }
+
+.rail-top { display: flex; gap: var(--s2); align-items: center; }
+.new-chat {
+  flex: 1; display: flex; align-items: center; gap: 6px; justify-content: center;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  border-radius: var(--r2); padding: 9px 12px;
+  font-size: 12px; font-weight: 650; font-family: inherit; cursor: pointer;
+  transition: all 160ms ease;
+}
+.new-chat:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.new-chat span { font-size: 15px; line-height: 1; }
+
+.rail-section {
+  font-size: 9px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase;
+  color: var(--muted); padding: var(--s2) 2px 0;
+}
+
+/* Takes the slack and keeps a usable minimum: in the dock the quests and the
+   XP bar below would otherwise squeeze this to a couple of crushed lines. */
+.rail-list { flex: 1 1 auto; min-height: 72px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.rail-item {
+  display: block; width: 100%; text-align: left;
+  border: 1px solid transparent; background: none; color: var(--text);
+  border-radius: var(--r1); padding: 7px 9px;
+  font-size: 12px; font-family: inherit; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background 140ms ease;
+}
+.rail-item:hover { background: var(--bg); }
+.rail-item.current { background: var(--accent-soft); border-color: #cfe2f8; color: var(--accent); font-weight: 650; }
+.rail-item .when { display: block; font-size: 9px; color: var(--muted); font-weight: 400; }
+.rail-empty { font-size: 11px; color: var(--muted); padding: 4px 9px; }
+
+/* --------------------------------------------------------------- quests */
+/* Named after what they teach, so the list is a tour of the repository's
+   capabilities rather than a trophy cabinet. */
+.quests { list-style: none; margin: 0; padding: 0; flex: none; display: flex; flex-direction: column; gap: 3px; }
+.quests li {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; color: var(--muted); padding: 4px 6px; border-radius: var(--r1);
+  cursor: pointer; transition: background 140ms ease, color 140ms ease;
+}
+.quests li:hover { background: var(--bg); color: var(--text); }
+.quests li::before {
+  content: "\25CB"; font-size: 10px; color: var(--border); flex: none;
+}
+.quests li.done { color: var(--ok); }
+.quests li.done::before { content: "\2713"; color: var(--ok); font-weight: 700; }
+
+/* --------------------------------------------------------------- xp bar */
+.xp-bar {
+  position: relative; height: 20px; border-radius: 999px;
+  background: var(--sunken); overflow: hidden; flex: none;
+  /* Pinned to the foot of the rail, so progress reads as a footer rather than
+     as another list item. */
+  margin-top: auto;
+}
+.xp-fill {
+  position: absolute; inset: 0 auto 0 0; width: 0;
+  background: linear-gradient(90deg, var(--gold), #ffc94d);
+  transition: width 600ms cubic-bezier(.22, .9, .3, 1);
+}
+.xp-text {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 9px; font-weight: 700; letter-spacing: .3px; color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+/* ------------------------------------------------------------------ head */
+.bot-head {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex: none;
+}
+
+/* ---------------------------------------------------------- avatar + xp */
+.avatar-wrap { position: relative; width: 44px; height: 44px; flex: none; }
+
+.ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+.ring-track, .ring-fill {
+  fill: none; stroke-width: 3; stroke-linecap: round;
+}
+.ring-track { stroke: var(--sunken); }
+.ring-fill {
+  stroke: var(--gold);
+  /* 2*pi*r for r=19. Progress is set by shifting the dash offset. */
+  stroke-dasharray: 119.4;
+  stroke-dashoffset: 119.4;
+  transition: stroke-dashoffset 600ms cubic-bezier(.22,.9,.3,1);
+}
+
+.avatar {
+  position: absolute; inset: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  transition: background 220ms ease, transform 220ms ease;
+}
+.avatar .eye {
+  position: absolute; top: 12px; width: 4px; height: 4px;
+  background: #fff; border-radius: 50%;
+  animation: blink 5s infinite;
+}
+.avatar .eye.left { left: 8px; }
+.avatar .eye.right { right: 8px; }
+
+@keyframes blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+
+/* The avatar is the status indicator, so a glance tells you where it is. */
+.avatar[data-mood="thinking"] { background: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
+.avatar[data-mood="found"]    { background: var(--ok); }
+.avatar[data-mood="stuck"]    { background: var(--fail); }
+/* Waiting on a person, not on the model - it must not look like progress. */
+.avatar[data-mood="waiting"]  { background: var(--accent); animation: nudge 1.4s ease-in-out infinite; }
+
+.level {
+  position: absolute; right: -2px; bottom: -2px;
+  min-width: 17px; height: 17px; padding: 0 3px;
+  border-radius: 9px; background: var(--gold); color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 17px; text-align: center;
+  border: 2px solid var(--bg);
+}
+.level.up { animation: levelPop 700ms cubic-bezier(.2,1.4,.4,1); }
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+@keyframes nudge {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+@keyframes levelPop {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.7) rotate(-8deg); }
+  100% { transform: scale(1); }
+}
+
+/* ------------------------------------------------------------- route flag */
+/* Reports the chosen engine. Styled as a label, not a button, so it does not
+   invite a click: there is nothing here for the user to set. */
+.route {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+  border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 600;
+  white-space: nowrap; cursor: default;
+}
+/* `display` on the class outranks the `hidden` attribute's own `display:none`,
+   which left an empty pill on screen between turns. */
+.route::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+}
+.route.search, .route.explore { color: var(--accent); border-color: #cfe2f8; background: var(--accent-soft); }
+.route.act { border-color: #f6c9a8; color: var(--warn); background: var(--warn-soft); }
+.route.undo { border-color: var(--border); color: var(--muted); background: var(--sunken); }
+
+.who { flex: 1; min-width: 0; }
+.name {
+  font-weight: 650; font-size: 14px; letter-spacing: -.01em;
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+}
+.rank {
+  flex: none;
+  font-size: 9px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--gold); background: #fff8e8; border: 1px solid #f6e0ad;
+  border-radius: 999px; padding: 1px 6px;
+}
+.state { font-size: 11px; color: var(--muted); margin-top: 1px; }
+
+/* Below this the rank pill and the route flag fight for the same row, and the
+   route flag is the one carrying information about the current turn. */
+@media (max-width: 360px) {
+  .rank { display: none; }
+}
+
+.icon-btn {
+  border: 1px solid var(--border); background: var(--bg); color: var(--muted);
+  width: 28px; height: 28px; border-radius: var(--r1); cursor: pointer; font-size: 14px;
+  flex: none; transition: all 160ms ease;
+}
+.icon-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+/* ------------------------------------------------------------------ copy */
+/* Sits inside the answer it copies, revealed on hover so a long transcript is
+   not a column of buttons. Always visible to the keyboard. */
+.msg.bot { position: relative; }
+/* Keeps the first heading clear of the control sitting over it. */
+.msg.bot.has-copy { padding-right: 62px; }
+.copy {
+  position: absolute; top: 6px; right: 6px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--muted);
+  border-radius: var(--r1); padding: 2px 8px; font-size: 10px; font-weight: 600;
+  font-family: inherit; cursor: pointer;
+  opacity: 0; transition: opacity 160ms ease, color 160ms ease;
+}
+.msg.bot:hover .copy, .copy:focus-visible { opacity: 1; }
+.copy:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ------------------------------------------------------------ scoreboard */
+.scoreboard {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s2);
+  padding: var(--s3) var(--s4); flex: none;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+}
+.score {
+  text-align: center; background: var(--bg);
+  border: 1px solid var(--border); border-radius: var(--r1);
+  padding: 6px 2px; box-shadow: var(--shadow);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+.score span {
+  display: block; font-size: 17px; font-weight: 700; color: var(--accent);
+  font-variant-numeric: tabular-nums; line-height: 1.15;
+}
+.score em {
+  font-style: normal; font-size: 9px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .4px;
+}
+.score.done span { color: var(--ok); }
+/* Fires when a counter changes, so the reward is tied to the thing earned. */
+.score.bump { animation: scoreBump 520ms cubic-bezier(.2,1.3,.4,1); }
+@keyframes scoreBump {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.14); box-shadow: var(--shadow-lift); }
+  100% { transform: scale(1); }
+}
+
+/* ---------------------------------------------------------------- toasts */
+.toasts {
+  position: absolute; left: 0; right: 0; bottom: 96px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  pointer-events: none; z-index: 5;
+}
+.toast {
+  display: flex; align-items: center; gap: 7px;
+  background: #1b2127; color: #fff;
+  border-radius: 999px; padding: 7px 14px 7px 10px;
+  font-size: 12px; font-weight: 600;
+  box-shadow: 0 6px 20px rgba(16, 24, 40, .28);
+  animation: toastIn 300ms cubic-bezier(.2,1.2,.4,1);
+}
+.toast.out { animation: toastOut 320ms ease forwards; }
+.toast .medal {
+  width: 20px; height: 20px; border-radius: 50%; flex: none;
+  background: var(--gold); color: #1b2127;
+  font-size: 11px; line-height: 20px; text-align: center;
+}
+.toast small { font-weight: 500; opacity: .72; }
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(10px) scale(.94); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes toastOut {
+  to { opacity: 0; transform: translateY(-6px) scale(.96); }
+}
+
+/* ------------------------------------------------------------- approvals */
+.approval {
+  align-self: stretch; border: 1px solid #f6c9a8; background: var(--warn-soft);
+  border-radius: var(--r2); padding: var(--s3); animation: pop 220ms ease-out;
+  box-shadow: var(--shadow);
+}
+.approval-head {
+  display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s2);
+}
+.approval-head .badge {
+  background: var(--warn); color: #fff; border: none;
+  border-radius: 999px; padding: 2px 8px;
+  font-size: 9px; font-weight: 700; letter-spacing: .5px;
+}
+.approval-head strong { font-size: 13px; }
+.approval .args {
+  font-family: var(--mono); font-size: 11px; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--r1);
+  padding: var(--s2) 10px; margin-bottom: var(--s3); word-break: break-word;
+}
+.approval .args div { margin: 1px 0; }
+.approval .args em { font-style: normal; color: var(--muted); }
+.approval .buttons { display: flex; gap: var(--s2); }
+.approval button {
+  flex: 1; border-radius: var(--r1); padding: 8px 10px; font-size: 12px;
+  font-weight: 600; font-family: inherit; cursor: pointer;
+  border: 1px solid transparent; transition: all 160ms ease;
+}
+.approval .approve { background: var(--ok); color: #fff; box-shadow: var(--shadow); }
+.approval .approve:hover { filter: brightness(1.08); box-shadow: var(--shadow-lift); }
+.approval .reject { background: var(--bg); color: var(--fail); border-color: #f3b9b9; }
+.approval .reject:hover { background: var(--fail-soft); }
+.approval.settled { opacity: .7; border-color: var(--border); background: var(--surface); }
+.approval.settled .buttons { display: none; }
+.approval .outcome { font-size: 11px; font-weight: 700; }
+.approval .outcome.approved { color: var(--ok); }
+.approval .outcome.rejected { color: var(--fail); }
+
+.batch {
+  align-self: stretch; display: flex; gap: var(--s2); align-items: center;
+  font-size: 11px; color: var(--muted);
+}
+.batch button {
+  border: 1px solid var(--border); background: var(--bg); border-radius: var(--r1);
+  padding: 5px 11px; font-size: 11px; font-weight: 600; cursor: pointer;
+  font-family: inherit; transition: all 160ms ease;
+}
+.batch button.all { border-color: #b7e0c4; color: var(--ok); background: var(--ok-soft); }
+.batch button.none { border-color: #f3b9b9; color: var(--fail); background: var(--fail-soft); }
+.batch button:hover { box-shadow: var(--shadow-lift); }
+
+/* The plan the agent wrote for itself, when it wrote one. */
+.plan {
+  align-self: stretch; border-left: 2px solid var(--accent);
+  background: var(--accent-soft); border-radius: 0 var(--r1) var(--r1) 0;
+  padding: var(--s2) 10px;
+}
+.plan .t { font-size: 9px; text-transform: uppercase; letter-spacing: .5px; color: var(--accent); font-weight: 700; }
+.plan ul { margin: var(--s1) 0 0; padding: 0; }
+.plan li { font-size: 12px; margin: 2px 0; list-style: none; }
+.plan li::before { content: "\25CB"; color: var(--muted); margin-right: 6px; }
+.plan li.done::before { content: "\25CF"; color: var(--ok); }
+
+/* -------------------------------------------------------------------- log */
+.log {
+  flex: 1; overflow-y: auto; padding: var(--s4);
+  display: flex; flex-direction: column; gap: var(--s3);
+  scroll-behavior: smooth;
+}
+.log::-webkit-scrollbar { width: 8px; }
+.log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.log::-webkit-scrollbar-thumb:hover { background: #cbd3dd; }
+
+.msg { max-width: 88%; font-size: 13px; line-height: 1.5; animation: pop 220ms ease-out; }
+.msg.user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  color: #fff; font-weight: 500;
+  padding: 8px 12px; border-radius: var(--r2) var(--r2) var(--s1) var(--r2);
+  box-shadow: var(--shadow);
+}
+.msg.bot {
+  align-self: flex-start; background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 10px 12px; border-radius: var(--r2) var(--r2) var(--r2) var(--s1);
+}
+.msg.bot h3 { margin: 10px 0 3px; font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing: .5px; font-weight: 700; }
+.msg.bot h3:first-child { margin-top: 0; }
+.msg.bot p { margin: 4px 0; }
+.msg.bot code { font-family: var(--mono); font-size: 11px; background: var(--bg); border: 1px solid var(--border); padding: 1px 5px; border-radius: 4px; }
+.msg.bot ul { margin: 4px 0; padding-left: 18px; }
+.msg.bot strong { font-weight: 650; }
+
+/* The trail is the "show your working" element: each probe appears as it runs. */
+.trail { display: flex; flex-wrap: wrap; gap: 5px; align-self: flex-start; }
+.chip {
+  font-size: 10px; font-family: var(--mono); font-weight: 600;
+  background: var(--accent-soft); color: var(--accent);
+  border: 1px solid #cfe2f8; border-radius: 999px; padding: 3px 9px;
+  animation: pop 260ms ease-out backwards;
+}
+/* Staggered so the trail reads as a sequence of steps, not one block. */
+.chip:nth-child(2) { animation-delay: 60ms; }
+.chip:nth-child(3) { animation-delay: 120ms; }
+.chip:nth-child(4) { animation-delay: 180ms; }
+.chip:nth-child(n+5) { animation-delay: 240ms; }
+.chip.done { background: var(--ok-soft); color: var(--ok); border-color: #b7e0c4; }
+@keyframes pop {
+  from { opacity: 0; transform: translateY(5px) scale(.94); }
+  to { opacity: 1; transform: none; }
+}
+
+.verdict {
+  align-self: flex-start; font-size: 11px; font-weight: 700;
+  border-radius: 999px; padding: 4px 11px;
+  animation: pop 260ms ease-out;
+}
+.verdict.found { background: var(--ok-soft); color: var(--ok); }
+.verdict.query { background: var(--warn-soft); color: var(--warn); }
+.verdict.permissions { background: var(--warn-soft); color: var(--warn); }
+.verdict.infrastructure { background: var(--fail-soft); color: var(--fail); }
+
+.hit {
+  align-self: stretch; display: flex; gap: 10px; align-items: center;
+  border: 1px solid var(--border); border-radius: var(--r2); padding: 9px 11px;
+  background: var(--bg); box-shadow: var(--shadow);
+  animation: pop 240ms ease-out;
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+.hit:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); border-color: #cfe2f8; }
+.hit .doc {
+  width: 26px; height: 32px; border-radius: 3px; flex: none;
+  background: linear-gradient(160deg, var(--accent-soft), var(--sunken));
+  border: 1px solid var(--border);
+}
+.hit .meta { min-width: 0; flex: 1; }
+.hit .t { font-size: 12px; font-weight: 650; color: var(--accent); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hit .t:hover { text-decoration: underline; }
+.hit .p { font-size: 10px; color: var(--muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+
+.typing { display: flex; gap: 4px; align-self: flex-start; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r2) var(--r2) var(--r2) var(--s1); }
+.typing i { width: 5px; height: 5px; background: var(--muted); border-radius: 50%; animation: bounce 1.2s infinite; }
+.typing i:nth-child(2) { animation-delay: .15s; }
+.typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: .35; } 30% { transform: translateY(-4px); opacity: 1; } }
+
+/* ------------------------------------------------------------ suggestions */
+.suggestions { display: flex; gap: 5px; flex-wrap: wrap; padding: 0 var(--s4) var(--s3); flex: none; }
+.suggestion {
+  font-size: 11px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 999px; padding: 5px 11px; cursor: pointer; color: var(--muted);
+  font-family: inherit; transition: all 160ms ease;
+}
+.suggestion:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-soft); transform: translateY(-1px);
+}
+
+/* --------------------------------------------------------------- context */
+/* What the host page can see. A label, not a control: it reports grounding
+   so that "these" and "here" are visibly backed by something. */
+.context-row { padding: 0 var(--s4); flex: none; }
+.context {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 600; color: var(--accent);
+  background: var(--accent-soft); border: 1px solid #cfe2f8;
+  border-radius: 999px; padding: 3px 9px; margin-bottom: var(--s2);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.context[hidden] { display: none; }
+.context::before { content: "\25C9"; font-size: 8px; }
+/* --------------------------------------------------------------- composer */
+.composer {
+  display: flex; gap: var(--s2); padding: var(--s3) var(--s4);
+  border-top: 1px solid var(--border); flex: none; background: var(--bg);
+}
+.composer textarea {
+  flex: 1; border: 1px solid var(--border); border-radius: var(--r3);
+  padding: 10px 15px; font-size: 13px; font-family: inherit; outline: none;
+  background: var(--surface); transition: border-color 160ms ease, box-shadow 160ms ease;
+  /* Hidden until the box stops growing, or a one-line field shows scroll
+     arrows it has no use for. */
+  resize: none; overflow-y: hidden; line-height: 1.45; max-height: 160px;
+}
+.composer textarea:focus {
+  border-color: var(--accent); background: var(--bg);
+  box-shadow: 0 0 0 3px rgba(31, 122, 224, .12);
+}
+.send {
+  width: 36px; height: 36px; border-radius: 50%; border: none; flex: none;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  color: #fff; cursor: pointer;
+  display: grid; place-items: center;
+  box-shadow: var(--shadow); transition: all 160ms ease;
+}
+.send svg { width: 16px; height: 16px; fill: currentColor; }
+.send:hover:not(:disabled) { transform: scale(1.06); box-shadow: var(--shadow-lift); }
+.send:disabled { background: var(--border); color: var(--muted); cursor: default; box-shadow: none; }
+
+/* ----------------------------------------------------------------- signin */
+/* Only the full screen shows this. The docked panel is handed a ticket by the
+   page around it, so it never asks. */
+.signin { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s2); }
+.signin input {
+  border: 1px solid var(--border); border-radius: var(--r1);
+  padding: 9px 12px; font-size: 13px; font-family: inherit; outline: none;
+  background: var(--bg);
+}
+.signin input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(31,122,224,.12); }
+.signin button {
+  border: none; border-radius: var(--r1); padding: 9px 12px;
+  font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep)); color: #fff;
+}
+.signin button:disabled { background: var(--border); color: var(--muted); cursor: default; }
+
+/* ------------------------------------------------------------ full screen */
+/* The same document as the docked panel, given room. Driven by width, not by
+   whether the page is framed: Share embeds this full-width in its own page, so
+   it deserves the roomy layout as much as a standalone tab does, while the
+   420px dock keeps the compact one. */
+@media (min-width: 720px) {
+  body {
+    --page: min(880px, 100%);
+    background: var(--surface);
+  }
+  /* Permanent column here: there is width for it, and a visible history is
+     the difference between a chat box and somewhere work gets done. */
+  .rail {
+    position: static; transform: none; box-shadow: none;
+    width: 252px; flex: none;
+  }
+  .rail-close, .rail-toggle { display: none; }
+
+  .bot-head, .scoreboard, .log, .suggestions, .context-row, .composer {
+    width: var(--page); margin-inline: auto;
+  }
+  .bot-head, .composer { background: transparent; }
+  .bot-head { border-bottom: none; }
+  .scoreboard { background: transparent; border-bottom: none; }
+  /* The conversation is the surface; the page behind it is just margin. */
+  .log {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--r3);
+    padding: var(--s4) 22px;
+    margin-block: var(--s2);
+    box-shadow: var(--shadow);
+  }
+  .msg { max-width: 76%; font-size: 14px; }
+  .name { font-size: 16px; }
+  /* Nothing to expand into: this is already the full view, in a tab or in
+     Share's own page. Starting a new conversation still applies. */
+  #expandBtn { display: none; }
+  /* Align the inner edges: the card has a border plus its own padding. */
+  .suggestions, .composer { padding-inline: 23px; }
+  .composer textarea { font-size: 14px; padding: 12px 18px; }
+  .send { width: 40px; height: 40px; }
+  .send svg { width: 18px; height: 18px; }
+  /* Out of the reading column: centred, a toast lands on the paragraph being
+     read. The dock has no room for that luxury and keeps it centred. */
+  .toasts { bottom: 96px; right: 24px; left: auto; align-items: flex-end; }
+
+  /* Before the first question the card is mostly empty, so the opening line
+     becomes the centrepiece rather than a small bubble above a void. */
+  .log.empty { justify-content: center; align-items: center; }
+  .log.empty .msg.bot {
+    /* .msg.bot sets align-self: flex-start, which outranks the container's
+       align-items and would leave this hugging the left edge. */
+    align-self: center;
+    background: none; border: none; padding: 0;
+    max-width: 34ch; text-align: center;
+    font-size: 19px; line-height: 1.45; color: var(--muted);
+  }
+  .log.empty .msg.bot strong { color: var(--text); }
+}

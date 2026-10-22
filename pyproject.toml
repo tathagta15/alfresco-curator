@@ -1,0 +1,109 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alfresco-curator"
+version = "1.0.0"
+description = "An agentic curator for Alfresco Content Services: natural-language search, write actions with undo, and search root-cause diagnosis"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["alfresco", "ecm", "langgraph", "agent", "afts", "search"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: FastAPI",
+    "Topic :: Office/Business :: Groupware",
+]
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "python-dotenv>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "langchain>=1.0",
+    "langchain-core>=1.0",
+    "langchain-openai>=1.0",
+    "langgraph>=1.0",
+    "deepagents>=0.7",
+    # Gemini is the stand-in when the primary provider hits a daily quota.
+    "langchain-google-genai>=3.0",
+]
+
+[project.optional-dependencies]
+# Each extra pulls only the integration package its provider needs.
+anthropic = ["langchain-anthropic>=1.0"]
+gemini = ["langchain-google-genai>=3.0"]
+ollama = ["langchain-ollama>=1.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pypdf>=4.0",
+]
+
+[project.scripts]
+alfresco-curator = "alfresco_curator.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+alfresco_curator = ["web/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: requires a running Alfresco stack (deselect with -m 'not integration')",
+]
+
+[tool.coverage.run]
+source = ["alfresco_curator"]
+branch = true
+
+[tool.coverage.report]
+skip_empty = true
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts", "evals"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "RUF",
+]
+ignore = [
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The few-shot examples are prompt text: rewrapping them would change what the
+# model is shown, so the line limit does not apply inside these literals.
+"src/alfresco_curator/diagnostics/query_generator.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["alfresco_curator"]
+mypy_path = "src"
+warn_unused_configs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["anthropic.*", "openai.*", "uvicorn.*"]
+ignore_missing_imports = true

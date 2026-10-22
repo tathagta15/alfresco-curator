@@ -1,0 +1,33 @@
+# Secrets and local configuration
+.env
+.streamlit/secrets.toml
+
+# Alfresco licence files are customer secrets; the directory itself is kept.
+docker/licenses/*
+!docker/licenses/README.txt
+
+# Virtual environments
+.venv/
+venv/
+
+# Python build and bytecode artefacts
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors
+.idea/
+.vscode/
+
+# Generated output
+demo_data/generated/
+*.log

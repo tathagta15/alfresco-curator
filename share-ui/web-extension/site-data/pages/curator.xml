@@ -1,0 +1,15 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<page>
+   <title>Curator</title>
+   <title-id>page.curator.title</title-id>
+   <description>Natural language search, root-cause diagnosis and indexing pipeline telemetry</description>
+   <description-id>page.curator.description</description-id>
+   <template-instance>curator</template-instance>
+   <authentication>user</authentication>
+   <components>
+      <component>
+         <region-id>curator</region-id>
+         <url>/components/curator/curator</url>
+      </component>
+   </components>
+</page>

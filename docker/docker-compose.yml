@@ -1,0 +1,303 @@
+# Alfresco Content Services + Elasticsearch + the Curator, as one stack.
+#
+# `docker compose up -d` brings up the repository, the search pipeline, a Share
+# image with the Curator UI built in, the Curator service itself, and seeds the
+# demo content. Nothing else needs running for a demo.
+#
+# Derived from the upstream reference:
+# https://github.com/Alfresco/acs-deployment/blob/master/docker-compose/community-compose.yaml
+# minus the traefik proxy, Kibana, Content App and Control Center, so the
+# repository is exposed directly on :8080 and Share on :8180.
+#
+# Indexing polls the database every 15s, so content is searchable seconds
+# after upload rather than instantly.
+#
+# Requires ~8GB of memory available to Docker.
+#
+#   docker compose -f docker/docker-compose.yml up -d --build
+
+name: alfresco-curator
+
+services:
+  postgres:
+    image: postgres:17.9
+    container_name: acs-postgres
+    mem_limit: 512m
+    environment:
+      POSTGRES_DB: alfresco
+      POSTGRES_USER: alfresco
+      POSTGRES_PASSWORD: alfresco
+    command: postgres -c max_connections=300 -c log_min_messages=LOG
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $$POSTGRES_DB -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  activemq:
+    image: alfresco/alfresco-activemq:6.2.9-jre17-rockylinux8
+    container_name: acs-activemq
+    mem_limit: 1g
+    environment:
+      ACTIVEMQ_ADMIN_LOGIN: admin
+      ACTIVEMQ_ADMIN_PASSWORD: admin
+    ports:
+      - "8161:8161"   # web console
+      - "61616:61616" # openwire
+    healthcheck:
+      test: ["CMD", "/opt/activemq/bin/activemq", "query", "--objname", "type=Broker,brokerName=*,service=Health", "|", "grep", "Good"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  elasticsearch:
+    image: elasticsearch:8.17.10
+    container_name: acs-elasticsearch
+    mem_limit: 1500m
+    environment:
+      - xpack.security.enabled=false
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    cap_add:
+      - IPC_LOCK
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"\\(green\\|yellow\\)\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  alfresco:
+    # Alfresco Enterprise. Requires `docker login quay.io`; the image is public
+    # to Alfresco staff only. Override ALFRESCO_REPO_IMAGE to pin a version or
+    # to fall back to Community (see .env.example).
+    image: ${ALFRESCO_REPO_IMAGE:-quay.io/alfresco/alfresco-content-repository:latest}
+    container_name: acs-repository
+    mem_limit: 1900m
+    depends_on:
+      postgres: { condition: service_healthy }
+      activemq: { condition: service_healthy }
+      elasticsearch: { condition: service_healthy }
+    environment:
+      JAVA_TOOL_OPTIONS: >-
+        -Dencryption.keystore.type=JCEKS
+        -Dencryption.cipherAlgorithm=DESede/CBC/PKCS5Padding
+        -Dencryption.keyAlgorithm=DESede
+        -Dencryption.keystore.location=/usr/local/tomcat/shared/classes/alfresco/extension/keystore/keystore
+        -Dmetadata-keystore.password=mp6yc0UD9e
+        -Dmetadata-keystore.aliases=metadata
+        -Dmetadata-keystore.metadata.password=oKIWzVdEdA
+        -Dmetadata-keystore.metadata.algorithm=DESede
+      JAVA_OPTS: >-
+        -Ddb.driver=org.postgresql.Driver
+        -Ddb.username=alfresco
+        -Ddb.password=alfresco
+        -Ddb.url=jdbc:postgresql://postgres:5432/alfresco
+        -Dindex.subsystem.name=elasticsearch
+        -Delasticsearch.createIndexIfNotExists=true
+        -Delasticsearch.host=elasticsearch
+        -Delasticsearch.port=9200
+        -Dsolr.secureComms=secret
+        -Dsolr.sharedSecret=secret
+        -Dshare.host=localhost
+        -Dshare.port=8180
+        -Dalfresco.host=localhost
+        -Dalfresco.port=8080
+        -Dcsrf.filter.enabled=false
+        -Daos.baseUrlOverwrite=http://localhost:8080/alfresco/aos
+        -Dmessaging.broker.url="failover:(nio://activemq:61616)?timeout=3000&jms.useCompression=true"
+        -Dmessaging.broker.username=admin
+        -Dmessaging.broker.password=admin
+        -Ddeployment.method=DOCKER_COMPOSE
+        -DlocalTransform.core-aio.url=http://transform-core-aio:8090/
+        -XX:MinRAMPercentage=50
+        -XX:MaxRAMPercentage=80
+    ports:
+      - "8080:8080"
+    volumes:
+      - alfresco-data:/usr/local/tomcat/alf_data
+      # Drop a .lic file into docker/licenses to replace the 2-day trial. The
+      # directory is committed with a .gitkeep so the mount always resolves.
+      - ./licenses:/usr/local/tomcat/shared/classes/alfresco/extension/license:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/alfresco/api/-default-/public/alfresco/versions/1/probes/-ready-"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 1m
+
+  # Replaces the deprecated Solr search service: polls the repository database
+  # and writes the search index into Elasticsearch.
+  batch-indexing:
+    image: alfresco/alfresco-elasticsearch-batch-indexing:5.8.0
+    container_name: acs-batch-indexing
+    mem_limit: 1g
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+      alfresco: { condition: service_healthy }
+      transform-core-aio: { condition: service_healthy }
+    environment:
+      JAVA_OPTS: -Xms256m -Xmx768m
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/alfresco
+      SPRING_DATASOURCE_USERNAME: alfresco
+      SPRING_DATASOURCE_PASSWORD: alfresco
+      SPRING_ELASTICSEARCH_REST_URIS: http://elasticsearch:9200
+      ALFRESCO_ACCEPTEDCONTENTMEDIATYPESCACHE_BASEURL: http://transform-core-aio:8090/transform/config
+      ALFRESCO_ACS_URL: http://alfresco:8080
+      ALFRESCO_CONTENT_TRANSFORM_SHAREDSECRET: secret
+      ALFRESCO_REINDEX_CONTINUOUS_POLLINGINTERVAL: 15s
+      ALFRESCO_REINDEX_CONTINUOUS_CATCHUPPOLLINGINTERVAL: 1s
+      ALFRESCO_REINDEX_CONTINUOUS_MAXWINDOW: 30m
+      ALFRESCO_REINDEX_CONTINUOUS_OVERLAP: 10m
+    # Spring Boot actuator, read by the pipeline tracer. Local demo only:
+    # do not expose this port on a shared or public host.
+    ports:
+      - "8081:8080"
+
+  transform-core-aio:
+    image: alfresco/alfresco-transform-core-aio:5.4.4
+    container_name: acs-transform-aio
+    mem_limit: 1536m
+    depends_on:
+      activemq: { condition: service_healthy }
+    environment:
+      JAVA_OPTS: >-
+        -XX:MinRAMPercentage=50
+        -XX:MaxRAMPercentage=80
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/ready"]
+      interval: 20s
+      timeout: 2s
+      retries: 3
+      start_period: 10s
+
+  share:
+    # The Curator's Surf page, component, header item and doclib action are
+    # layered onto the stock Share image, so compose builds this itself and the
+    # stack needs no preparation step.
+    build:
+      context: ..
+      dockerfile: docker/share/Dockerfile
+    image: ${ALFRESCO_SHARE_IMAGE:-alfresco-share-curator:local}
+    container_name: acs-share
+    mem_limit: 1g
+    depends_on:
+      alfresco: { condition: service_healthy }
+    environment:
+      REPO_HOST: alfresco
+      REPO_PORT: "8080"
+      CSRF_FILTER_ORIGIN: http://localhost:8180
+      CSRF_FILTER_REFERER: http://localhost:8180/share/.*
+      # Substituted into share-config-custom.xml at start-up, so the Curator
+      # can move without rebuilding the Share image.
+      CURATOR_URL: ${CURATOR_PUBLIC_URL:-http://localhost:8600}
+      JAVA_OPTS: >-
+        -XX:MinRAMPercentage=50
+        -XX:MaxRAMPercentage=80
+        -Dalfresco.host=localhost
+        -Dalfresco.port=8080
+        -Dalfresco.context=alfresco
+        -Dalfresco.protocol=http
+    ports:
+      - "8180:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/share"]
+      interval: 20s
+      timeout: 2s
+      retries: 3
+      start_period: 15s
+
+  curator:
+    build:
+      context: ..
+    image: alfresco-curator:local
+    container_name: acs-curator
+    mem_limit: 512m
+    depends_on:
+      alfresco: { condition: service_healthy }
+      elasticsearch: { condition: service_healthy }
+    # Compose resolves `.env` relative to this file, so the project-root .env
+    # carrying the LLM credentials has to be named explicitly. Passing it as a
+    # file rather than through `environment:` avoids the interpolation
+    # defaults silently overriding it with empty values.
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      # Service-to-service addresses inside the compose network.
+      ALFRESCO_BASE_URL: http://alfresco:8080/alfresco
+      ALFRESCO_ADMIN_USER: ${ALFRESCO_ADMIN_USER:-admin}
+      ALFRESCO_ADMIN_PASSWORD: ${ALFRESCO_ADMIN_PASSWORD:-admin}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      INDEXER_URL: http://batch-indexing:8080
+      ACTIVEMQ_URL: http://activemq:8161
+      # Browser-facing addresses: these must resolve from the user's machine.
+      CURATOR_SHARE_BASE_URL: ${SHARE_PUBLIC_URL:-http://localhost:8180/share}
+      CURATOR_FRAME_ANCESTORS: >-
+        'self',${SHARE_PUBLIC_ORIGIN:-http://localhost:8180},${ADW_PUBLIC_ORIGIN:-http://localhost:8280}
+    ports:
+      - "8600:8600"
+
+  # Alfresco Digital Workspace: the modern client, alongside Share.
+  # ADW ships as a built bundle with no server-side extension point, and runs
+  # as a non-root user that cannot write to its own html directory, so the
+  # launcher is injected by nginx as the page is served. The same server block
+  # proxies /alfresco, which puts ADW and the repository on one origin.
+  digital-workspace:
+    image: ${ALFRESCO_ADW_IMAGE:-quay.io/alfresco/alfresco-digital-workspace:8.1.0-34465594232}
+    container_name: acs-adw
+    mem_limit: 512m
+    depends_on:
+      alfresco: { condition: service_healthy }
+    environment:
+      # BASIC rather than the OAUTH default: this stack carries no Keycloak,
+      # and basic auth yields the repository ticket the Curator reuses.
+      APP_CONFIG_AUTH_TYPE: BASIC
+      APP_CONFIG_PROVIDER: ECM
+      # Empty means same-origin: the repository is proxied by this server, so
+      # the browser never makes a cross-origin call that CORS would refuse.
+      APP_CONFIG_ECM_HOST: ""
+      APP_CONFIG_BPM_HOST: ""
+      # Consumed by the nginx template, not by ADW itself.
+      CURATOR_URL: ${CURATOR_PUBLIC_URL:-http://localhost:8600}
+      REPO_URL: http://alfresco:8080
+    volumes:
+      - ./adw/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "8280:8080"
+
+  # One-shot: creates the demo content, ACLs and demo.analyst, then exits.
+  # Re-running compose re-seeds harmlessly; node ids are preserved.
+  demo-data:
+    build:
+      context: ..
+    image: alfresco-curator:local
+    container_name: acs-demo-data
+    depends_on:
+      alfresco: { condition: service_healthy }
+    environment:
+      ALFRESCO_BASE_URL: http://alfresco:8080/alfresco
+      ALFRESCO_ADMIN_USER: ${ALFRESCO_ADMIN_USER:-admin}
+      ALFRESCO_ADMIN_PASSWORD: ${ALFRESCO_ADMIN_PASSWORD:-admin}
+    command: ["python", "scripts/demo/seed_demo_data.py"]
+    restart: "no"
+
+volumes:
+  postgres-data:
+  elasticsearch-data:
+  alfresco-data:

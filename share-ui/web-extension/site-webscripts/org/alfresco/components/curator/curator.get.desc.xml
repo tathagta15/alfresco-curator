@@ -1,0 +1,5 @@
+<webscript>
+   <shortname>Curator</shortname>
+   <description>Embeds the Alfresco Curator inside Share.</description>
+   <url>/components/curator/curator</url>
+</webscript>
