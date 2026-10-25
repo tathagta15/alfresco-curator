@@ -170,6 +170,27 @@ class WebSettings(BaseSettings):
         return self
 
 
+class GovernanceSettings(BaseSettings):
+    model_config = _BASE | SettingsConfigDict(env_prefix="GOVERNANCE_")
+
+    # Durable by default: an audit trail that dies with the container is not
+    # an audit trail. Mount this path to keep it across a restart.
+    ledger_path: str = "data/governance-ledger.jsonl"
+
+    # Empty means unrestricted, which is reported on /api/health rather than
+    # left to be discovered. When set, a model host outside it refuses to
+    # build, so a non-compliant deployment never serves a first request.
+    allowed_model_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    # Drop free-text metadata (title, description) before it reaches a model.
+    minimise_metadata: bool = False
+
+    @field_validator("allowed_model_hosts", mode="before")
+    @classmethod
+    def _split_hosts(cls, value: str | list[str]) -> list[str]:
+        return _csv(value)
+
+
 class Settings(BaseSettings):
     model_config = _BASE
 
@@ -179,6 +200,7 @@ class Settings(BaseSettings):
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     web: WebSettings = Field(default_factory=WebSettings)
+    governance: GovernanceSettings = Field(default_factory=GovernanceSettings)
 
 
 @lru_cache(maxsize=1)

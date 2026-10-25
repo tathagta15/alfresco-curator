@@ -164,10 +164,15 @@ def build_deep_agent(
     by_name = {tool.name: tool for tool in tools}
 
     settings = get_settings().llm
+    # The tool-calling model cannot be wrapped in a retry runnable, so its
+    # retries have to come from the SDK. Kept small: a hard refusal should
+    # reach the backup quickly rather than being retried for half a minute.
     if use_backup_model and settings.backup_provider and settings.backup_model:
-        model = llm.chat_model(settings.backup_model, provider_name=settings.backup_provider)
+        model = llm.chat_model(
+            settings.backup_model, provider_name=settings.backup_provider, max_retries=2
+        )
     else:
-        model = llm.chat_model(llm.model())
+        model = llm.chat_model(llm.model(), max_retries=2)
 
     prompt = SYSTEM_PROMPT
     interrupt_on: dict[str, Any] | None = None
@@ -232,6 +237,12 @@ def _collect(agent: Any, payload: Any, thread_id: str, prompt: str) -> dict[str,
 
     answer = ""
     for message in reversed(messages):
+        # Only the model's own closing message is an answer. Without this
+        # test the walk ran past it into the raw tool JSON, and when the model
+        # closed with nothing it reached the user's own prompt and handed it
+        # back as though the agent had written it.
+        if getattr(message, "type", "") != "ai":
+            continue
         content = getattr(message, "content", "")
         if (
             isinstance(content, str)
@@ -241,13 +252,20 @@ def _collect(agent: Any, payload: Any, thread_id: str, prompt: str) -> dict[str,
             answer = content
             break
 
+    pending = _pending(result)
+    # A run paused for approval has no closing message and needs none; the
+    # cards are the output. Anything else with no answer has genuinely failed,
+    # and saying so beats a blank panel.
+    if not answer and not pending:
+        answer = "The model did not return an answer for this request. Try asking again."
+
     return {
         "prompt": prompt,
         "report": answer,
         "steps": steps,
         "todos": result.get("todos", []),
         "messageCount": len(messages),
-        "pending": _pending(result),
+        "pending": pending,
     }
 
 

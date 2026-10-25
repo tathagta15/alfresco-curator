@@ -113,7 +113,31 @@ class TestRunDeepAgent:
         run_deep_agent(agent, "prompt", thread_id="abc")
         assert agent.invoke.call_args.kwargs["config"]["configurable"]["thread_id"] == "abc"
 
-    def test_a_run_with_no_spoken_answer_is_empty_not_a_crash(self):
+    def test_a_run_with_no_spoken_answer_says_so_rather_than_crashing(self):
         agent = Mock()
         agent.invoke.return_value = {"messages": []}
-        assert run_deep_agent(agent, "prompt")["report"] == ""
+        report = run_deep_agent(agent, "prompt")["report"]
+        assert "did not return an answer" in report
+        assert report != "prompt", "the user's own words are not an answer"
+
+    def test_the_users_prompt_is_never_returned_as_the_answer(self):
+        """The walk back for a closing message used to accept any message, so
+        a model that said nothing handed the user their own question back."""
+        agent = Mock()
+        agent.invoke.return_value = {"messages": [HumanMessage(content="what can you do?")]}
+        assert run_deep_agent(agent, "what can you do?")["report"] != "what can you do?"
+
+    def test_raw_tool_output_is_never_returned_as_the_answer(self):
+        agent = Mock()
+        agent.invoke.return_value = {
+            "messages": [
+                HumanMessage(content="find invoices"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "search_repository", "args": {}, "id": "1"}],
+                ),
+                ToolMessage(content='{"ok": true, "total": 8}', tool_call_id="1"),
+            ]
+        }
+        report = run_deep_agent(agent, "find invoices")["report"]
+        assert not report.lstrip().startswith("{"), "raw tool JSON reached the user"

@@ -16,11 +16,21 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from alfresco_curator import logging_setup
+from alfresco_curator import governance, logging_setup
 from alfresco_curator.config import Settings, get_settings
 from alfresco_curator.diagnostics.telemetry import Telemetry
 from alfresco_curator.errors import AlfrescoError, CuratorError, LLMError, SessionExpiredError
-from alfresco_curator.web.routes import agent, diagnose, nodes, search, session, trace
+from alfresco_curator.web.routes import (
+    agent,
+    diagnose,
+    nodes,
+    search,
+    session,
+    trace,
+)
+from alfresco_curator.web.routes import (
+    governance as governance_routes,
+)
 from alfresco_curator.web.sessions import SessionStore
 
 log = logging.getLogger(__name__)
@@ -46,6 +56,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             config.alfresco.base_url,
             config.llm.provider,
         )
+        ledger = governance.get_ledger()
+        if ledger.enabled and not ledger.writable():
+            # Loud on day one rather than discovered at audit time, when the
+            # months of records that should exist do not.
+            log.error(
+                "governance ledger at %s is not writable - decisions and egress "
+                "are NOT being recorded",
+                ledger.path,
+            )
         try:
             yield
         finally:
@@ -66,6 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(diagnose.router)
     app.include_router(trace.router)
     app.include_router(nodes.router)
+    app.include_router(governance_routes.router)
 
     @app.exception_handler(SessionExpiredError)
     async def _session_expired(_: Request, exc: SessionExpiredError) -> JSONResponse:

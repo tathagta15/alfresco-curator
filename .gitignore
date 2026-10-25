@@ -2,6 +2,10 @@
 .env
 .streamlit/secrets.toml
 
+# The governance ledger records real prompts, users and node ids. It belongs
+# on a protected volume with its own retention, never in version control.
+data/
+
 # Alfresco licence files are customer secrets; the directory itself is kept.
 docker/licenses/*
 !docker/licenses/README.txt

@@ -1,5 +1,5 @@
 """API routers."""
 
-from alfresco_curator.web.routes import diagnose, search, session, trace
+from alfresco_curator.web.routes import diagnose, governance, search, session, trace
 
-__all__ = ["diagnose", "search", "session", "trace"]
+__all__ = ["diagnose", "governance", "search", "session", "trace"]

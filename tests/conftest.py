@@ -13,9 +13,23 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from alfresco_curator import governance
 from alfresco_curator.alfresco.client import AlfrescoClient
 from alfresco_curator.config import get_settings
+from alfresco_curator.governance.ledger import Ledger
 from alfresco_curator.web.app import create_app
+
+
+@pytest.fixture(autouse=True)
+def _isolated_ledger(tmp_path, monkeypatch) -> Ledger:
+    """A test must never append to the deployment's audit trail.
+
+    Without this the suite wrote prompts and node ids into the configured
+    ledger path, which is both pollution and a file nobody meant to keep.
+    """
+    ledger = Ledger(tmp_path / "test-ledger.jsonl")
+    monkeypatch.setattr(governance, "get_ledger", lambda: ledger)
+    return ledger
 
 
 @pytest.fixture(autouse=True)

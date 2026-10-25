@@ -14,7 +14,13 @@ RUN pip install --no-cache-dir .
 
 COPY scripts ./scripts
 
-RUN useradd --create-home --uid 10001 curator && chown -R curator:curator /app
+# The governance ledger's directory has to exist, owned by the runtime user,
+# *before* a named volume is mounted over it: Docker seeds a fresh volume from
+# the image, so it inherits this ownership. Created by the mount instead, it
+# belongs to root and every audit write fails with EACCES.
+RUN useradd --create-home --uid 10001 curator \
+    && mkdir -p /app/data \
+    && chown -R curator:curator /app
 USER curator
 
 EXPOSE 8600

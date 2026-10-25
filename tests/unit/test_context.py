@@ -82,6 +82,19 @@ class TestRefusal:
     def test_a_request_pointing_at_nothing_is_never_refused(self):
         assert unresolved("find the Q3 invoices", PageContext()) == ""
 
+    def test_a_question_about_those_is_left_to_the_thread(self):
+        # "of those" nearly always means the results just discussed, so
+        # refusing it answers a safe question with a dead end.
+        assert unresolved("of those, which one is older?", PageContext(), writes=False) == ""
+
+    def test_an_instruction_about_those_is_still_refused(self):
+        assert "nothing is selected" in unresolved("delete those", PageContext(), writes=True)
+
+    def test_a_place_has_no_conversational_antecedent(self):
+        # A thread never establishes which folder is open, so this stands
+        # even for a question.
+        assert unresolved("what is in this folder", PageContext(), writes=False)
+
 
 class TestGrounding:
     def test_the_page_facts_reach_the_prompt(self):

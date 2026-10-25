@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 
+from alfresco_curator import governance
 from alfresco_curator.agent import SearchAgent
 from alfresco_curator.agent.actions import AuditLog, undo_run
 from alfresco_curator.agent.context import PageContext, Selected, apply, unresolved
@@ -48,9 +49,14 @@ def ask(
     # Deixis is resolved before routing acts on it. An instruction that points
     # at the screen with nothing on it must stop here: the alternatives are to
     # do nothing silently, or to apply it to everything, and the second is how
-    # an agent destroys a repository.
+    # an agent destroys a repository. A question is left to the thread.
     page = _page_context(body.context)
-    blocked = unresolved(body.prompt, page)
+    blocked = unresolved(body.prompt, page, writes=intent.writes)
+    # Recorded before the refusal branch: an instruction that was stopped is
+    # exactly the kind an auditor comes looking for.
+    governance.record_ask(
+        body.prompt, "clarify" if blocked else intent.route, client.username or "unknown"
+    )
     if blocked:
         return AskResponse(
             route="clarify",
@@ -108,8 +114,11 @@ def ask_stream(
     """
     intent = classify(body.prompt)
     page = _page_context(body.context)
-    blocked = unresolved(body.prompt, page)
+    blocked = unresolved(body.prompt, page, writes=intent.writes)
     grounded = body.model_copy(update={"prompt": apply(body.prompt, page)})
+    governance.record_ask(
+        body.prompt, "clarify" if blocked else intent.route, client.username or "unknown"
+    )
 
     def events():
         yield _sse(
@@ -238,8 +247,15 @@ def run_deep(
         # throw away the undo history for changes already made.
         if session.audit is None or session.deep_client is not client:
             session.audit = AuditLog()
+        # The chosen model belongs to the session for the same reason. A
+        # rebuild that reverted to an exhausted primary failed on the next
+        # turn, and the already-used backup flag then blocked the retry.
         session.deep_agent = build_deep_agent(
-            client, telemetry, audit=session.audit, allow_writes=body.allow_writes
+            client,
+            telemetry,
+            audit=session.audit,
+            allow_writes=body.allow_writes,
+            use_backup_model=session.deep_backup,
         )
         session.deep_writes = body.allow_writes
         session.deep_client = client
@@ -287,6 +303,17 @@ def _deep_result(call, session) -> DeepAgentResponse:
         raise  # handled globally as a 401 so the UI can re-authenticate
     except Exception as exc:
         log.exception("deep agent run failed")
+        # A model that is throttled, forbidden or overloaded is not an
+        # internal fault, and a 500 invites the user to report a bug in the
+        # repository instead of trying again.
+        if _model_unavailable(exc):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "The language model is unavailable right now. "
+                    "Try again in a moment, or configure a different model."
+                ),
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
         ) from exc
@@ -299,9 +326,55 @@ def _deep_result(call, session) -> DeepAgentResponse:
     )
 
 
+def _error_text(exc: BaseException) -> str:
+    """Every message in the explicit cause chain, lowered.
+
+    The vendor error is re-raised as an HTTPException with a readable message,
+    which would otherwise hide the very tokens these predicates match on. Only
+    `raise ... from` links are followed: an implicit context can carry an
+    unrelated failure that happened to be in flight.
+    """
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.append(str(current))
+        current = current.__cause__
+    return " ".join(parts).lower()
+
+
 def _is_quota_error(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return "429" in text or "quota" in text or "rate_limit" in text
+    """Whether the primary model is unusable for this account, not merely busy.
+
+    A gateway refuses a model it will never serve - an unfunded paid model, a
+    revoked key - with 403, where waiting helps no more than it does for a
+    daily cap. Both deserve the backup; treating only the cap as recoverable
+    turned a switchable failure into a 500.
+    """
+    text = _error_text(exc)
+    return any(
+        token in text
+        for token in (
+            "429",
+            "quota",
+            "rate_limit",
+            "permission_denied",
+            "permission_error",
+            "insufficient_quota",
+            "billing",
+            "payment",
+            "paid model",
+        )
+    )
+
+
+def _model_unavailable(exc: Exception) -> bool:
+    """Whether the model, rather than this service, is what failed."""
+    text = _error_text(exc)
+    return _is_quota_error(exc) or any(
+        token in text for token in ("503", "unavailable", "overloaded", "high demand", "timed out")
+    )
 
 
 @router.post("/deep/undo", response_model=UndoResponse)

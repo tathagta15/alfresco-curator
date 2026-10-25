@@ -50,6 +50,19 @@ class TestChatModel:
             built = llm.chat_model("gemini-3.6-flash")
         assert built.max_retries == 0
 
+    def test_a_model_that_cannot_be_wrapped_may_keep_sdk_retries(self):
+        """`bind_tools` is not exposed by a retry or fallback runnable, so the
+        deep agent's model carries its own retries or has none at all. A
+        transient 503 from the backup ended the turn with a 500."""
+        with patch("alfresco_curator.llm.client.get_settings") as settings:
+            cfg = settings.return_value.llm
+            cfg.provider = "openai"
+            cfg.openai_api_key.get_secret_value.return_value = "key-test"
+            cfg.openai_base_url = ""
+            cfg.request_timeout_seconds = 30.0
+            built = llm.chat_model("gpt-4o", max_retries=2)
+        assert built.max_retries == 2
+
 
 class TestComplete:
     """The chain is prompt -> model -> parser, so the model is stubbed as a runnable."""

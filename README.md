@@ -20,7 +20,7 @@ sentence, with no mode to set first.
 
 [Why](#why) · [Quick start](#quick-start) · [How it works](#how-it-works) ·
 [Diagnosis](#diagnosis-why-didnt-my-document-match) ·
-[Guardrails](#guardrails) · [Evals](#measured-not-claimed) ·
+[Guardrails](#guardrails) · [Governance](#governance) · [Evals](#measured-not-claimed) ·
 [Inside Share and ADW](#inside-share-and-digital-workspace) ·
 [API](#rest-api) · [Layout](#project-layout) · [Development](#development)
 
@@ -184,6 +184,81 @@ above.
 All three are deterministic and testable without a model, which is the point: *a
 guardrail that only holds when the model cooperates is not a guardrail.*
 
+## Governance
+
+Written for deployments that have to answer to a regulator, not just to a user.
+
+**Document content never leaves the repository.** There is no content-download
+path in [client.py](src/alfresco_curator/alfresco/client.py); the only binary
+fetch is a thumbnail, and it goes to the browser. What a model receives is
+metadata — name, path, title, description, mimeType — and clause counts. That
+is a property of the code, not a policy promise, which is why
+`/api/governance/posture` is willing to state it.
+
+Metadata is still personal data: filenames and descriptions carry surnames and
+case numbers. The claim is *data-minimised*, never *anonymous*.
+
+| Control | What it does |
+| --- | --- |
+| **Decision ledger** | Durable, hash-chained record of every instruction, egress and change |
+| **Endpoint allowlist** | A model host outside `GOVERNANCE_ALLOWED_MODEL_HOSTS` refuses to build |
+| **Minimisation** | Withholds `cm:title` and `cm:description` from the model |
+| **ACL inheritance** | Every query and probe runs on the signed-in user's own ticket |
+
+### The ledger
+
+Alfresco's own audit records the change; it cannot record the reason. *"admin
+renamed this node"* is true and useless once an agent chose the name. The
+ledger answers the rest — which instruction produced it, what left the network,
+who approved it, and whether it can be put back.
+
+```powershell
+curl http://localhost:8600/api/governance/posture   # controls in force
+curl http://localhost:8600/api/governance/ledger    # recent records
+curl http://localhost:8600/api/governance/verify    # recompute the hash chain
+```
+
+It records field *names and node ids, never values*:
+
+```json
+{"kind": "ask",    "detail": {"prompt": "find the unpaid invoices", "route": "search"}}
+{"kind": "egress", "detail": {"purpose": "report", "endpoint": "api.example.com",
+                              "nodeCount": 2, "fields": ["description", "name", "path", "title"]}}
+```
+
+An audit trail that copies the values it audits is simply a second place the
+personal data lives, and a second thing to secure, retain and erase.
+
+Each line carries the hash of the line before it, so an edited or removed
+record breaks the chain and `verify` names the position that fails. It is
+tamper-**evident**, not tamper-proof: whoever owns the file can still delete the
+file, so durability and retention belong to the volume it is written to.
+
+`/api/governance/posture` reports `writable` separately from `enabled`, because
+the dangerous state is a ledger that is configured, reports itself on, and
+silently fails every write — which is exactly what a root-owned volume mount
+produces.
+
+### Sovereign deployment
+
+Regulated customers cannot send a repository to a public endpoint. Point the
+provider at a local model and let the allowlist enforce it:
+
+```ini
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://ollama.internal:11434
+GOVERNANCE_ALLOWED_MODEL_HOSTS=ollama.internal
+GOVERNANCE_MINIMISE_METADATA=true
+```
+
+A host outside that list raises at construction, so a non-compliant deployment
+never serves a first request. An empty allowlist means unrestricted, and says
+so on `/api/governance/posture` rather than leaving it to be discovered.
+
+`LANGSMITH_TRACING` sends prompts and tool results to a third party. It is off
+by default and reported in the posture, because it is a processing route like
+any other.
+
 ## Measured, not claimed
 
 ```powershell
@@ -214,7 +289,7 @@ but the decision was implicit — and an omission there looks exactly like a
 deliberate choice, which is how a change that cannot be put back ends up
 presented as one that can.
 
-Plus **415 unit tests**: `python -m pytest`.
+Plus **448 unit tests**: `python -m pytest`.
 
 ## Finding what you meant, not what you typed
 
@@ -286,6 +361,9 @@ anyway.
 | `POST /api/diagnose` | Clause probes, ACL inspection, pipeline evidence, report |
 | `POST /api/trace` | Full indexing pipeline walk for one node |
 | `GET /api/nodes/{id}/thumbnail` | Rendition proxied with the session's ticket |
+| `GET /api/governance/posture` | The controls in force, and what never leaves the repository |
+| `GET /api/governance/ledger` | The decision and egress record |
+| `GET /api/governance/verify` | Recompute the ledger's hash chain |
 | `POST /api/disconnect` | Drop the session |
 
 Credentials are exchanged once and held server side; the browser holds only an
@@ -299,12 +377,13 @@ src/alfresco_curator/
   agent/         routing, the escalation ladder, tools, actions, guardrails
   alfresco/      ticket auth, AFTS/Lucene, node and permission reads
   diagnostics/   clause probes, pipeline tracing, telemetry
+  governance/    the decision ledger, endpoint allowlist, minimisation
   llm/           provider-agnostic chat model, retry and fallback
   web/           FastAPI service, routes and the panel
 share-ui/        Surf page, doclib action, Share launcher
 scripts/         demo/ rehearsal · dev/ probes · deployment checks
 evals/           scored suites
-tests/           415 unit tests
+tests/           448 unit tests
 docs/diagrams/   generated — edit generate.py, not the output
 ```
 
@@ -340,7 +419,7 @@ python -m uvicorn alfresco_curator.web.app:create_app --factory --port 8600 --re
 ```
 
 ```powershell
-python -m pytest                     # 415 unit tests
+python -m pytest                     # 448 unit tests
 python -m ruff check . ; python -m ruff format .
 python -m evals.run                  # scored suites
 python docs/diagrams/generate.py     # regenerate the diagrams
@@ -355,6 +434,7 @@ Useful probes:
 | `scripts/dev/try_intent.py` | Show how asks are routed — no repository or model needed |
 | `scripts/dev/try_query.py '<afts>'` | Run one AFTS query and print the hits |
 | `scripts/dev/diagnose_as.py` | Diagnose as any identity, printing pipeline evidence |
+| `scripts/dev/check_governance.py` | Prove the ledger records an ask, its egress, and verifies |
 | `scripts/api_smoke.py` | End-to-end REST check, including edge cases |
 
 ## About the stack

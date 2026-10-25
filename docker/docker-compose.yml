@@ -250,6 +250,11 @@ services:
       CURATOR_SHARE_BASE_URL: ${SHARE_PUBLIC_URL:-http://localhost:8180/share}
       CURATOR_FRAME_ANCESTORS: >-
         'self',${SHARE_PUBLIC_ORIGIN:-http://localhost:8180},${ADW_PUBLIC_ORIGIN:-http://localhost:8280}
+      # On a volume, because an audit trail that dies with the container is
+      # not an audit trail.
+      GOVERNANCE_LEDGER_PATH: /app/data/governance-ledger.jsonl
+    volumes:
+      - curator-governance:/app/data
     ports:
       - "8600:8600"
 
@@ -301,3 +306,4 @@ volumes:
   postgres-data:
   elasticsearch-data:
   alfresco-data:
+  curator-governance:

@@ -16,6 +16,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
+from alfresco_curator import governance
 from alfresco_curator.agent.guardrails import guard_result
 from alfresco_curator.alfresco.client import AlfrescoClient
 from alfresco_curator.diagnostics.search_debugger import (
@@ -62,16 +63,25 @@ def build_tools(client: AlfrescoClient, telemetry: Telemetry | None = None) -> l
         def run() -> dict[str, Any]:
             payload = client.search_afts(query, max_items=max_items, language=language)
             listing = payload.get("list", {})
+            results = [
+                {
+                    "id": item["entry"].get("id"),
+                    "name": item["entry"].get("name"),
+                    "path": (item["entry"].get("path") or {}).get("name"),
+                }
+                for item in listing.get("entries", [])
+            ]
+            # The agent hands tool results straight to the model, so this is
+            # the point the egress can still be named field by field.
+            governance.record_egress(
+                "agent_search",
+                client.username or "unknown",
+                [row["id"] for row in results],
+                {"id", "name", "path"},
+            )
             return {
                 "total": listing.get("pagination", {}).get("totalItems", 0),
-                "results": [
-                    {
-                        "id": item["entry"].get("id"),
-                        "name": item["entry"].get("name"),
-                        "path": (item["entry"].get("path") or {}).get("name"),
-                    }
-                    for item in listing.get("entries", [])
-                ],
+                "results": results,
             }
 
         return safely(run)

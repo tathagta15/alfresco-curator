@@ -23,6 +23,7 @@ from langchain_core.runnables import Runnable
 
 from alfresco_curator.config import LLMSettings, get_settings
 from alfresco_curator.errors import LLMError
+from alfresco_curator.governance.policy import assert_endpoint_allowed
 from alfresco_curator.llm import models as catalogue
 
 log = logging.getLogger(__name__)
@@ -53,10 +54,22 @@ def chat_model(
     temperature: float = 0.0,
     json_mode: bool = False,
     provider_name: str = "",
+    max_retries: int = 0,
 ) -> BaseChatModel:
-    """One configured LangChain chat model, without retry or fallback."""
+    """One configured LangChain chat model, without retry or fallback.
+
+    `max_retries` stays 0 for anything wrapped by `resilient_model`, which
+    owns retrying. It is raised only for the deep agent, which cannot be
+    wrapped at all: `bind_tools` is not exposed by a retry or fallback
+    runnable, so without this the tool-calling path had no retry anywhere and
+    a transient 503 ended the turn.
+    """
     settings = _settings()
     which = provider_name or settings.provider
+    # Fail closed here rather than at call time: every model in the process is
+    # built through this function, so a host the operator has not approved
+    # cannot be reached by any path.
+    assert_endpoint_allowed(which)
     kwargs: dict[str, Any] = {
         "model": name,
         "temperature": temperature,
@@ -71,7 +84,7 @@ def chat_model(
         return ChatOpenAI(
             api_key=settings.openai_api_key.get_secret_value() or "not-set",
             base_url=settings.openai_base_url or None,
-            max_retries=0,  # retries belong to the runnable, not the SDK
+            max_retries=max_retries,  # retries belong to the runnable, not the SDK
             **kwargs,
         )
 
@@ -94,7 +107,7 @@ def chat_model(
             # not clear for hours is retried for ~30s per call and the two
             # layers of retry multiply. Retries belong to the runnable, which
             # knows there is another provider to try.
-            max_retries=0,
+            max_retries=max_retries,
             **kwargs,
         )
 
@@ -182,11 +195,16 @@ def _invoke(chain: Runnable, system: str, user: str) -> Any:
 # who can act on it, and it ends up pasted into reports that are meant to be
 # read, so the one fact worth keeping is lifted out.
 _QUOTA = re.compile(r"429|quota|rate.?limit|RESOURCE_EXHAUSTED", re.IGNORECASE)
+_FORBIDDEN = re.compile(r"permission_denied|permission_error|paid model|billing", re.IGNORECASE)
 _RESET = re.compile(r"retry in (?:(\d+)h)?(?:(\d+)m)?", re.IGNORECASE)
 
 
 def _brief(exc: Exception) -> str:
     text = str(exc)
+    # A refusal to serve the model at all reads like a quota failure to a user
+    # but is fixed somewhere else entirely, so it says which.
+    if _FORBIDDEN.search(text):
+        return f"the configured model is not available to this account ({model()})"
     if not _QUOTA.search(text):
         return text.split("\n", 1)[0][:300]
 

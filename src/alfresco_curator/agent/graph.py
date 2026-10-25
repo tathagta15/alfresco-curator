@@ -25,9 +25,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from alfresco_curator import llm
+from alfresco_curator import governance, llm
 from alfresco_curator.agent import semantic
 from alfresco_curator.agent.cache import TTLCache
+from alfresco_curator.agent.context import references_prior_results
 from alfresco_curator.alfresco import afts
 from alfresco_curator.alfresco.client import AlfrescoClient
 from alfresco_curator.diagnostics import tracer
@@ -102,6 +103,22 @@ Rules:
 - Be specific and brief: a few sentences per section.
 """
 
+RECALL_SYSTEM = """You are answering a follow-up question about documents the
+user has already been shown. No new search was run, and none is needed.
+
+`documents` is exactly what is on screen. Answer the question directly, in a
+sentence or two, naming the documents you mean.
+
+Rules:
+- Use ONLY the fields present in `documents`. Never invent a date, size,
+  status, author or path.
+- If the question asks for something those fields do not contain - an age, a
+  size, an owner that is simply not there - say which detail is missing and
+  offer to look it up, rather than guessing or implying the answer is unknowable.
+- Do not restate the whole list unless the question asks for it, and do not
+  tell the user to rewrite their question as a query.
+"""
+
 
 def _merge_steps(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Append within a run, reset between them.
@@ -136,6 +153,7 @@ class AgentState(TypedDict, total=False):
     report: str
     steps: Annotated[list[dict[str, Any]], _merge_steps]
     history: list[dict[str, Any]]
+    last_hits: list[dict[str, Any]]
     error: str
 
 
@@ -143,7 +161,8 @@ def _blank(prompt: str) -> AgentState:
     """A clean turn.
 
     The checkpointer restores the whole previous turn, so every per-run field
-    is cleared explicitly; only `history` is meant to carry over.
+    is cleared explicitly; only `history` and `last_hits` are meant to carry
+    over - a follow-up has nothing to answer from otherwise.
     """
     return {
         "prompt": prompt,
@@ -486,22 +505,34 @@ class SearchAgent:
         """
         clauses = afts.split_top_level_and(state.get("afts_query", ""))
         evidence: list[dict[str, Any]] = []
+        node_ids: list[str] = []
         for hit in state.get("results", [])[:MAX_ATTRIBUTED]:
             node_id = hit.get("id")
             if not node_id:
                 continue
+            node_ids.append(node_id)
             matched = [
                 clause for clause in clauses[:6] if self._count(afts.scope_to_node(clause, node_id))
             ]
             evidence.append(
-                {
-                    "name": hit.get("name"),
-                    "title": hit.get("title"),
-                    "description": hit.get("description"),
-                    "path": hit.get("path"),
-                    "matchedClauses": matched,
-                }
+                governance.minimise(
+                    {
+                        "name": hit.get("name"),
+                        "title": hit.get("title"),
+                        "description": hit.get("description"),
+                        "path": hit.get("path"),
+                        "matchedClauses": matched,
+                    }
+                )
             )
+        # Recorded where the metadata is assembled for the prompt, which is the
+        # last point it can still be named field by field.
+        governance.record_egress(
+            "report",
+            self.client.username or "unknown",
+            node_ids,
+            {field for row in evidence for field in row},
+        )
         return evidence
 
     def _write(self, system: str, evidence: str) -> str:
@@ -567,7 +598,32 @@ class SearchAgent:
             "total": state.get("total"),
             "cause": state.get("cause"),
         }
-        return {"history": [*state.get("history", []), entry]}
+        update: AgentState = {"history": [*state.get("history", []), entry]}
+        # Keep the documents this turn explained so the next one can be a
+        # question about them. A turn that found nothing leaves the previous
+        # answer in place rather than blanking what the user can still see.
+        documents = state.get("match_evidence") or []
+        if documents:
+            update["last_hits"] = documents
+        return update
+
+    def recall(self, state: AgentState) -> AgentState:
+        """Answer a follow-up from the previous answer, without searching again.
+
+        The words in "which of those is older" are not content terms, so
+        searching for them is guaranteed to find nothing and then blame the
+        user's phrasing for a question that was perfectly clear.
+        """
+        documents = state.get("last_hits") or []
+        evidence = {"request": state["prompt"], "documents": documents}
+        report = self._write(RECALL_SYSTEM, evidence)
+        return {
+            "cause": "found",
+            "total": len(documents),
+            "match_evidence": documents,
+            "report": report,
+            "steps": [_step("recall", f"answered from {len(documents)} document(s) already found")],
+        }
 
     # --------------------------------------------------------------------- graph
     def _found(self, state: AgentState) -> str:
@@ -586,6 +642,12 @@ class SearchAgent:
         dead_path = [row for row in state.get("path_reach", []) if row["hits"] == 0]
         return "report" if (dead or dead_path) else "infra"
 
+    def _opening(self, state: AgentState) -> str:
+        """A question about the last answer is not a new search."""
+        if references_prior_results(state.get("prompt", "")) and state.get("last_hits"):
+            return "recall"
+        return "plan"
+
     def _build(self) -> StateGraph:
         graph = StateGraph(AgentState)
         graph.add_node("plan", self.plan)
@@ -594,15 +656,17 @@ class SearchAgent:
         graph.add_node("recover", self.recover)
         graph.add_node("infra", self.infra)
         graph.add_node("report", self.report)
+        graph.add_node("recall", self.recall)
         graph.add_node("remember", self.remember)
 
-        graph.add_edge(START, "plan")
+        graph.add_conditional_edges(START, self._opening, ["plan", "recall"])
         graph.add_edge("plan", "search")
         graph.add_conditional_edges("search", self._found, ["forensics", "report"])
         graph.add_edge("forensics", "recover")
         graph.add_conditional_edges("recover", self._needs_infra, ["infra", "report"])
         graph.add_edge("infra", "report")
         graph.add_edge("report", "remember")
+        graph.add_edge("recall", "remember")
         graph.add_edge("remember", END)
         return graph
 

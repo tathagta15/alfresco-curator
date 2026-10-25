@@ -71,6 +71,29 @@ def references_place(prompt: str) -> bool:
     return bool(_PLACE_DEIXIS.search((prompt or "").lower()))
 
 
+# A follow-up points back at the answer on screen, not at anything in the
+# repository. Searching for its words finds nothing - they are not content
+# terms - and the zero-hit postmortem then blames the user's phrasing for a
+# question that was perfectly clear.
+_FOLLOW_UP = re.compile(
+    r"\b(?:"
+    r"which (?:one |of )?(?:those|these|them|the (?:two|three|results?|documents?|files?|hits?))"
+    r"|(?:of|among|between) (?:those|these|them)"
+    r"|the (?:first|second|third|last|other|older|oldest|newer|newest|larger|largest"
+    r"|smaller|smallest) one"
+    r"|you just (?:found|said|showed|listed|returned)"
+    r"|(?:tell me|say) more about (?:it|them|those|these|that)"
+    r"|summari[sz]e (?:it|them|those|these|that|the results?)"
+    r"|(?:from|in|out of) (?:those|these|the) (?:results?|hits?)"
+    r")\b"
+)
+
+
+def references_prior_results(prompt: str) -> bool:
+    """Whether the request is about the previous answer rather than the repository."""
+    return bool(_FOLLOW_UP.search((prompt or "").lower()))
+
+
 def describe(context: PageContext) -> str:
     """The facts the page can supply, stated plainly for the model.
 
@@ -98,16 +121,22 @@ def _name(item: Selected) -> str:
     return f"{label} (id {item.id})" if item.id and item.name else label
 
 
-def unresolved(prompt: str, context: PageContext) -> str:
+def unresolved(prompt: str, context: PageContext, *, writes: bool = True) -> str:
     """Why this request cannot be carried out from the page, if it cannot.
 
     Returns an empty string when there is nothing in the way.
     """
-    if references_items(prompt) and not context.selected:
+    # Only an instruction is dangerous when it points at nothing: the choice is
+    # between doing nothing and doing it to everything. A question carries no
+    # such risk, and "which of those is older" almost always means the results
+    # just discussed, which the thread already holds.
+    if writes and references_items(prompt) and not context.selected:
         return (
             "You have pointed at something on screen, but nothing is selected. "
             "Select the items you mean and ask again, or name them."
         )
+    # A place has no conversational antecedent: a thread never establishes
+    # which folder is open, so this one stands whether or not it writes.
     if references_place(prompt) and not (context.folder_id or context.folder_path):
         return (
             "You have asked about where you are, but the page has not told me "

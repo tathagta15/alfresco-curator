@@ -19,6 +19,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
+from alfresco_curator import governance
 from alfresco_curator.agent.guardrails import MutationBudget
 from alfresco_curator.alfresco.client import AlfrescoClient
 from alfresco_curator.errors import AlfrescoError
@@ -124,6 +125,23 @@ class AuditLog:
         ]
 
 
+def _ledger(entry: AuditEntry) -> None:
+    """Mirror one settled audit entry into the durable ledger.
+
+    The in-session log answers "can this be undone"; it dies with the session.
+    The ledger answers "what did the agent change, on whose instruction", and
+    has to outlive the container for that to be worth anything.
+    """
+    governance.record_decision(
+        entry.action,
+        entry.arguments,
+        entry.user,
+        entry.outcome,
+        reversible=entry.action in REVERSIBLE,
+        detail=entry.detail,
+    )
+
+
 def build_action_tools(client: AlfrescoClient, audit: AuditLog) -> list[StructuredTool]:
     """Write tools bound to one authenticated session, each audited."""
 
@@ -157,12 +175,14 @@ def build_action_tools(client: AlfrescoClient, audit: AuditLog) -> list[Structur
         except AlfrescoError as exc:
             entry.outcome, entry.detail = "failed", str(exc)
             log.info("action %s failed: %s", name, exc)
+            _ledger(entry)
             # Returned rather than raised: the agent should report the refusal
             # and carry on with the rest of a batch.
             return {"ok": False, "error": str(exc)}
         entry.outcome = "ok"
         entry.detail = result.get("id", "") if isinstance(result, dict) else ""
         entry.created_id = entry.detail
+        _ledger(entry)
         return {"ok": True, "result": _thin(result)}
 
     def create_folder(parent_id: str, name: str, title: str = "") -> dict[str, Any]:
