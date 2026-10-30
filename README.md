@@ -96,6 +96,11 @@ has to be reproducible and testable with no model in the loop. "Delete the
 duplicates" is an instruction; "show the deleted duplicates" is a description,
 and only the first carries the bare verb.
 
+Action clarifications stay attached to their conversation. "Yes", "apply that
+one", or a supplied tag value continues the pending request; a clear new search
+or undo starts its own route. A failed tool attempt is reported with its actual
+error and is not confused with an older refusal or a later successful retry.
+
 ### A question, end to end
 
 The route is decided the moment the request is read — before any search runs —
@@ -130,6 +135,24 @@ nothing selected has two plausible readings — do nothing, or do it to
 everything — and the second destroys a repository. So a deictic instruction
 with nothing to point at stops on `clarify` and asks, before any engine runs
 and before the write tools are built.
+
+Read-only exploration can also inspect the repository's native action catalogue,
+version history, comments, trashcan and exact folder matches. Human folder names
+are resolved to ACL-visible paths before a write is proposed; duplicate folder
+names cause a question, never a guess. The action catalogue remains useful for
+custom repository actions without granting the read-only agent mutation tools.
+
+### Alfresco folder rules
+
+Ask Curator to create a rule on a named folder, for example: “When a PDF arrives
+in Finance, add the versionable aspect.” Curator resolves the exact folder,
+checks the repository's action definition, and presents the complete rule for
+approval before creating it with ACS's folder rule API. Rules can trigger when
+items enter, change within, or leave a folder; conditions use Alfresco fields,
+and the rule can optionally inherit into subfolders. A rule applies to future
+events and does not process items that are already there. If the request has no
+condition, Curator asks for one unless the user explicitly wants the rule to
+apply to every item in the folder.
 
 ## Diagnosis: "why didn't my document match?"
 
@@ -203,7 +226,40 @@ case numbers. The claim is *data-minimised*, never *anonymous*.
 | **Decision ledger** | Durable, hash-chained record of every instruction, egress and change |
 | **Endpoint allowlist** | A model host outside `GOVERNANCE_ALLOWED_MODEL_HOSTS` refuses to build |
 | **Minimisation** | Withholds `cm:title` and `cm:description` from the model |
+| **Tracing** | LangSmith prompt/tool tracing is controlled per model run |
+| **Global change pause** | Blocks all repository changes, including already-pending approvals |
+| **Sharing and access gate** | Separately blocks Curator's named share links, permissions, groups, sites, and membership tools; disable custom actions too for broader coverage |
+| **Custom-action gate** | Controls repository-defined actions that can perform operations beyond Curator's named tools |
+| **Mutation budget** | Caps proposed writes per conversation; the updated limit applies immediately |
 | **ACL inheritance** | Every query and probe runs on the signed-in user's own ticket |
+
+The **Governance** control in the Curator header opens the live posture and
+policy editor. Reading posture requires a signed-in Alfresco session; changing
+policy requires membership in `GROUP_ALFRESCO_ADMINISTRATORS` by default.
+Set `GOVERNANCE_ADMIN_GROUPS` to a dedicated Alfresco group when governance
+ownership should be separate from repository administration. The server checks
+the user's Alfresco group membership on every policy read and write; the UI
+does not grant its own authority.
+
+Authorized operators can manage **AI and data** controls separately from
+**Repository changes** in the compact **Overview / Controls / Audit** view.
+They can pause all proposed changes, block sharing/access changes, or disable
+custom repository actions without disabling read-only discovery. Each change
+still requires individual human approval; that safeguard cannot be switched
+off. The policy is atomically written to
+`GOVERNANCE_POLICY_PATH` on the governance volume, and each requested/applied
+change is recorded in the hash-chained ledger. A policy change that restricts
+the active model host blocks subsequent model-backed
+requests immediately, including requests using an already-compiled deep agent.
+The form warns before saving such a change. Tracing uses an explicit per-run
+context, so it can be changed without restarting the service. Change gates
+are checked again when a tool executes, so a paused or newly restricted action
+cannot proceed through a stale agent or pending approval.
+
+The `GOVERNANCE_*` values in `.env` remain the deployment defaults. After an
+operator saves through the UI, the durable volume override takes precedence
+until **Restore defaults** is selected. Tracing and the mutation budget take
+effect on subsequent calls, including existing conversations.
 
 ### The ledger
 
@@ -289,7 +345,7 @@ but the decision was implicit — and an omission there looks exactly like a
 deliberate choice, which is how a change that cannot be put back ends up
 presented as one that can.
 
-Plus **448 unit tests**: `python -m pytest`.
+Plus **484 unit tests**: `python -m pytest`.
 
 ## Finding what you meant, not what you typed
 
@@ -299,9 +355,19 @@ happened to use, and the person asking rarely knows them.
 
 [semantic.py](src/alfresco_curator/agent/semantic.py) asks the model, once, for
 the vocabulary such a document would really contain and searches those terms as
-alternatives. The honest name for this is **concept expansion, not vector
-search** — this deployment has no embedding service, so no nearest-neighbour
-index is claimed. It runs only after a lexical search has found nothing.
+alternatives. This remains **concept expansion, not vector document search**.
+
+A local FastEmbed CPU model also creates user-scoped embeddings of ACL-visible
+file names and paths to rank contextual suggestion chips. The index is stored
+on Curator's data volume, keyed by an opaque hash of the Alfresco username, and
+pruned against the current ticket-filtered result set. File bodies, titles and
+descriptions are not embedded. AFTS remains the document-search authority;
+vector-ranked chips never bypass repository permissions.
+
+Full vector retrieval is not enabled. It would require candidate revalidation
+through the signed-in user's ticket, update/version/delete synchronization, and
+evaluation against permission-filtered queries. An unfiltered external vector
+store would bypass the repository's ACL boundary.
 
 **A relaxed query matches by construction.** It was built by removing whatever
 did not match, so "it returned rows" is not evidence that it returned answers.
@@ -383,7 +449,7 @@ src/alfresco_curator/
 share-ui/        Surf page, doclib action, Share launcher
 scripts/         demo/ rehearsal · dev/ probes · deployment checks
 evals/           scored suites
-tests/           448 unit tests
+tests/           484 unit tests
 docs/diagrams/   generated — edit generate.py, not the output
 ```
 
@@ -419,7 +485,7 @@ python -m uvicorn alfresco_curator.web.app:create_app --factory --port 8600 --re
 ```
 
 ```powershell
-python -m pytest                     # 448 unit tests
+python -m pytest                     # 484 unit tests
 python -m ruff check . ; python -m ruff format .
 python -m evals.run                  # scored suites
 python docs/diagrams/generate.py     # regenerate the diagrams
@@ -430,7 +496,7 @@ Useful probes:
 | Script | Purpose |
 | --- | --- |
 | `scripts/demo/seed_demo_data.py` | Create the demo content, ACLs and `demo.analyst` |
-| `scripts/demo/verify_demo.py` | Dress rehearsal; catches indexing lag and ACL drift |
+| `scripts/demo/verify_demo.py` | Dress rehearsal catches indexing lag and ACL drift |
 | `scripts/dev/try_intent.py` | Show how asks are routed — no repository or model needed |
 | `scripts/dev/try_query.py '<afts>'` | Run one AFTS query and print the hits |
 | `scripts/dev/diagnose_as.py` | Diagnose as any identity, printing pipeline evidence |

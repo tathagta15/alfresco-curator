@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -95,6 +97,151 @@ class TestResolveNodeId:
         client = self._client(lambda request: httpx.Response(500))
         with pytest.raises(AlfrescoError):
             client.resolve_node_id("")
+
+
+class TestFindFolders:
+    def _client(self, handler):
+        client = AlfrescoClient("http://acs.test:8080")
+        client._client = httpx.Client(
+            base_url=client.base_url, transport=httpx.MockTransport(handler)
+        )
+        client._query_language = "afts"
+        return client
+
+    def test_search_is_exact_and_returns_acl_visible_folder_paths(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["query"] = json.loads(request.content)["query"]["query"]
+            return httpx.Response(
+                200,
+                json={
+                    "list": {
+                        "entries": [
+                            {
+                                "entry": {
+                                    "id": "f-1",
+                                    "name": "Shared",
+                                    "nodeType": "cm:folder",
+                                    "path": {"name": "/Company Home/Shared"},
+                                }
+                            },
+                            {
+                                "entry": {
+                                    "id": "c-1",
+                                    "name": "Shared",
+                                    "nodeType": "cm:content",
+                                    "path": {"name": "/Company Home/Shared"},
+                                }
+                            },
+                        ]
+                    }
+                },
+            )
+
+        client = self._client(handler)
+        assert client.find_folders("Shared") == [
+            {"id": "f-1", "name": "Shared", "path": "/Company Home/Shared"}
+        ]
+        assert seen["query"] == 'TYPE:"cm:folder" AND =cm:name:"Shared"'
+
+    def test_rejects_quoted_folder_names_before_search(self):
+        def handler(_request: httpx.Request) -> httpx.Response:
+            raise AssertionError("unsafe name must not reach AFTS")
+
+        with pytest.raises(AlfrescoError, match="no quotes"):
+            self._client(handler).find_folders('Shared" OR *')
+
+
+class TestCreateFolderProperties:
+    def test_description_and_title_are_sent_as_cm_properties(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(201, json={"entry": {"id": "f-1"}})
+
+        client = AlfrescoClient("http://acs.test:8080")
+        client._client = httpx.Client(
+            base_url=client.base_url, transport=httpx.MockTransport(handler)
+        )
+
+        client.create_folder("parent-1", "Q4 Reports", "Q4 Reports", "Quarterly reports")
+
+        assert seen["body"]["properties"] == {
+            "cm:title": "Q4 Reports",
+            "cm:description": "Quarterly reports",
+        }
+
+
+class TestFolderRules:
+    def _client(self, handler):
+        client = AlfrescoClient("http://acs.test:8080")
+        client._client = httpx.Client(
+            base_url=client.base_url, transport=httpx.MockTransport(handler)
+        )
+        return client
+
+    def test_lists_rules_from_the_default_rule_set(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["maxItems"] = request.url.params["maxItems"]
+            return httpx.Response(
+                200,
+                json={"list": {"entries": [{"entry": {"id": "rule-1", "name": "Tag PDFs"}}]}},
+            )
+
+        client = self._client(handler)
+
+        assert client.folder_rules("folder-1") == [{"id": "rule-1", "name": "Tag PDFs"}]
+        assert seen == {
+            "path": (
+                "/alfresco/api/-default-/public/alfresco/versions/1/nodes/folder-1/"
+                "rule-sets/-default-/rules"
+            ),
+            "maxItems": "100",
+        }
+
+    def test_missing_default_rule_set_is_an_empty_list(self):
+        client = self._client(
+            lambda _request: httpx.Response(404, json={"error": {"briefSummary": "not found"}})
+        )
+
+        assert client.folder_rules("folder-1") == []
+
+    def test_creates_a_rule_with_the_given_trigger_condition_and_action(self):
+        seen = {}
+        rule = {
+            "name": "Tag incoming PDFs",
+            "isEnabled": True,
+            "isInheritable": False,
+            "triggers": ["inbound"],
+            "conditions": {
+                "booleanMode": "and",
+                "inverted": False,
+                "simpleConditions": [
+                    {"field": "cm:name", "comparator": "ends", "parameter": ".pdf"}
+                ],
+            },
+            "actions": [
+                {"actionDefinitionId": "add-features", "params": {"aspect-name": "cm:versionable"}}
+            ],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(201, json={"entry": {"id": "rule-1", **rule}})
+
+        client = self._client(handler)
+
+        created = client.create_folder_rule("folder-1", rule)
+
+        assert created["id"] == "rule-1"
+        assert seen["path"].endswith("/nodes/folder-1/rule-sets/-default-/rules")
+        assert seen["body"] == rule
 
 
 class TestTransportResilience:

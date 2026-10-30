@@ -26,6 +26,7 @@ class TestBuildTools:
             "narrow_conflict",
             "explain_node",
             "trace_pipeline",
+            "recommend_embeddings",
         }
 
     def test_tools_carry_a_schema_a_model_can_call(self):
@@ -62,6 +63,13 @@ class TestBuildTools:
     def test_tracing_without_telemetry_reports_rather_than_raises(self):
         tools = {tool.name: tool for tool in build_tools(client_for(), telemetry=None)}
         assert "error" in tools["trace_pipeline"].invoke({"node_id": "n1"})
+
+    def test_embedding_recommendation_distinguishes_current_and_proposed(self):
+        tools = {tool.name: tool for tool in build_tools(client_for())}
+        recommendation = tools["recommend_embeddings"].invoke({})
+        assert recommendation["current"]["vectorSearchEnabled"] is False
+        assert "AFTS" in recommendation["recommended"]["retrieval"][0]
+        assert "signed-in user's Alfresco ticket" in recommendation["recommended"]["retrieval"][3]
 
     def test_a_probe_still_runs_against_the_callers_own_client(self):
         # Permissions are part of the answer, so the tool must not widen scope.

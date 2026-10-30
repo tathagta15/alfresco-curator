@@ -181,9 +181,12 @@ EXPLORE_SIGNALS = (
     re.compile(r"\bcapabilit(?:y|ies)\b"),
     re.compile(r"\b(?:elasticsearch|activemq|solr|index(?:ing|er)?|rendition|transform)\b"),
     re.compile(r"\b(?:queue|lag|backlog|health|pipeline)\b"),
+    re.compile(r"\b(?:embedding|embeddings|vector(?:s| search| index)?|semantic search)\b"),
     re.compile(r"\b(?:permission|permissions|acl|access rights?)\b"),
     re.compile(r"\bwho can (?:see|read|edit|access)\b"),
     re.compile(r"\bversion history\b"),
+    re.compile(r"\b(?:folder|document) rules?\b"),
+    re.compile(r"\b(?:list|show|get|describe)\s+(?:the\s+)?rules?\b"),
 )
 
 # Narrow on purpose. "revert version 2 of the contract" is an action against the

@@ -18,7 +18,36 @@
     : window.location.origin;
   var CURATOR_URL = ORIGIN;
 
-  var dock, frame, launcher, loaded = false;
+  var dock, frame, launcher, loaded = false, dockResizeTimer;
+
+  function restoreDockSize() {
+    if (!dock) { return; }
+    if (window.innerWidth <= 520) {
+      dock.style.width = "";
+      dock.style.height = "";
+      return;
+    }
+    try {
+      var saved = JSON.parse(window.localStorage.getItem("curator.adw.dock-size.v1") || "null");
+      if (saved && typeof saved.width === "number" && typeof saved.height === "number") {
+        dock.style.width = Math.max(320, Math.min(saved.width, window.innerWidth - 32)) + "px";
+        dock.style.height = Math.max(380, Math.min(saved.height, window.innerHeight - 130)) + "px";
+      }
+    } catch (e) { /* storage may be unavailable in a restricted browser */ }
+  }
+
+  function saveDockSize() {
+    if (!dock || window.innerWidth <= 520 || dock.className !== "open") { return; }
+    if (dockResizeTimer) { window.clearTimeout(dockResizeTimer); }
+    dockResizeTimer = window.setTimeout(function () {
+      try {
+        var rect = dock.getBoundingClientRect();
+        window.localStorage.setItem("curator.adw.dock-size.v1", JSON.stringify({
+          width: Math.round(rect.width), height: Math.round(rect.height)
+        }));
+      } catch (e) { /* storage may be unavailable in a restricted browser */ }
+    }, 180);
+  }
 
   function style() {
     var css = document.createElement("style");
@@ -38,14 +67,18 @@
       "@keyframes curatorPip{0%,100%{box-shadow:0 0 0 0 rgba(16,137,62,.5)}",
       "50%{box-shadow:0 0 0 6px rgba(16,137,62,0)}}",
       "#curator-dock{position:fixed;right:22px;bottom:90px;z-index:10000;width:420px;",
-      "height:620px;max-height:calc(100vh - 130px);background:#fff;border:1px solid #e3e8ee;",
-      "border-radius:16px;box-shadow:0 20px 56px rgba(16,24,40,.26);overflow:hidden;display:none;",
+      "height:620px;min-width:320px;min-height:380px;max-width:calc(100vw - 32px);",
+      "max-height:calc(100vh - 130px);resize:both;background:#fff;border:1px solid #e3e8ee;",
+      "border-radius:16px;box-shadow:0 20px 56px rgba(16,24,40,.26);overflow:auto;display:none;",
       "transform-origin:bottom right}",
       "#curator-dock.open{display:block;animation:curatorDock .24s cubic-bezier(.2,1.1,.4,1)}",
       "@keyframes curatorDock{from{opacity:0;transform:translateY(12px) scale(.97)}",
       "to{opacity:1;transform:none}}",
       "#curator-dock iframe{width:100%;height:100%;border:0;display:block}",
-      "@media(max-width:520px){#curator-dock{right:10px;left:10px;width:auto}}"
+      "@media(min-width:521px) and (max-height:520px){#curator-dock{bottom:10px;",
+      "height:calc(100vh - 20px);min-height:240px;max-height:calc(100vh - 20px)}}",
+      "@media(max-width:520px){#curator-dock{right:10px;left:10px;width:auto;",
+      "height:calc(100vh - 130px);min-width:0;min-height:0;max-width:none;resize:none}}"
     ].join("");
     document.head.appendChild(css);
   }
@@ -61,12 +94,19 @@
 
     dock = document.createElement("div");
     dock.id = "curator-dock";
+    dock.setAttribute("aria-label", "Curator panel. Resize from the bottom-right corner.");
     frame = document.createElement("iframe");
     frame.title = "Curator";
     dock.appendChild(frame);
 
     document.body.appendChild(launcher);
     document.body.appendChild(dock);
+    restoreDockSize();
+    if (window.ResizeObserver) {
+      var dockResizeObserver = new window.ResizeObserver(saveDockSize);
+      dockResizeObserver.observe(dock);
+    }
+    window.addEventListener("resize", restoreDockSize);
     launcher.onclick = toggle;
   }
 

@@ -13,7 +13,9 @@ import pytest
 from fastapi.testclient import TestClient
 from tests.conftest import connect_with_ticket
 
+from alfresco_curator.agent.actions import AuditLog
 from alfresco_curator.web import routes
+from alfresco_curator.web.schemas import DeepAgentResponse
 
 
 @pytest.fixture
@@ -82,6 +84,63 @@ def test_the_route_is_always_explained(client, spies):
 def test_only_the_named_payload_is_populated(client, spies):
     body = ask(client, "find invoices")
     assert body["deep"] is None and body["undo"] is None
+
+
+def test_affirmative_answer_to_pending_action_continues_the_write_thread(client, spies):
+    connect_with_ticket(client)
+    session_id = client.cookies.get("curator_session")
+    session = client.app.state.sessions.get(session_id)
+    session.pending_action_threads.add("default")
+
+    response = client.post("/api/agent/ask", json={"prompt": "yes apply that one"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["route"] == "act"
+    assert spies["allow_writes"] is True
+
+
+def test_new_search_clears_pending_action_and_keeps_search_routing(client, spies):
+    connect_with_ticket(client)
+    session_id = client.cookies.get("curator_session")
+    session = client.app.state.sessions.get(session_id)
+    session.pending_action_threads.add("default")
+
+    response = client.post("/api/agent/ask", json={"prompt": "find unpaid invoices"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["route"] == "search"
+    assert "default" not in session.pending_action_threads
+
+
+def test_agent_question_marks_thread_as_waiting_for_action_details(client):
+    connect_with_ticket(client)
+    session = client.app.state.sessions.get(client.cookies.get("curator_session"))
+
+    routes.agent._remember_action_question(
+        session,
+        "default",
+        DeepAgentResponse(prompt="Add some description and tag", report="Which tag should I use?"),
+    )
+
+    intent = routes.agent._intent_for_thread("Q4-2026", session, "default")
+    assert "default" in session.pending_action_threads
+    assert intent.route == "act" and intent.writes is True
+
+
+def test_deep_response_contains_only_this_turns_audit_entries(client):
+    connect_with_ticket(client)
+    session = client.app.state.sessions.get(client.cookies.get("curator_session"))
+    session.audit = AuditLog()
+    old = session.audit.record("create_folder", {}, "share.user")
+    old.outcome = "failed"
+    current = session.audit.record("add_tag", {}, "share.user")
+    current.outcome = "failed"
+
+    response = routes.agent._with_turn_audit(
+        routes.agent.DeepAgentResponse(prompt="add a tag"), session, start=1
+    )
+
+    assert [entry["action"] for entry in response.turn_audit] == ["add_tag"]
 
 
 class TestPageContext:

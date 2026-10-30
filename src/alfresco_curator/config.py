@@ -170,12 +170,29 @@ class WebSettings(BaseSettings):
         return self
 
 
+class SemanticSettings(BaseSettings):
+    model_config = _BASE | SettingsConfigDict(env_prefix="SEMANTIC_")
+
+    enabled: bool = True
+    model_name: str = "BAAI/bge-small-en-v1.5"
+    model_cache_dir: str = "data/embedding-models"
+    index_path: str = "data/semantic-suggestions.sqlite3"
+    max_documents: int = Field(default=100, ge=1, le=500)
+
+
 class GovernanceSettings(BaseSettings):
     model_config = _BASE | SettingsConfigDict(env_prefix="GOVERNANCE_")
 
     # Durable by default: an audit trail that dies with the container is not
     # an audit trail. Mount this path to keep it across a restart.
     ledger_path: str = "data/governance-ledger.jsonl"
+    policy_path: str = "data/governance-policy.json"
+
+    # Alfresco group authorities allowed to change governance policy. A
+    # dedicated group can replace the built-in administrators group.
+    admin_groups: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["GROUP_ALFRESCO_ADMINISTRATORS"]
+    )
 
     # Empty means unrestricted, which is reported on /api/health rather than
     # left to be discovered. When set, a model host outside it refuses to
@@ -184,10 +201,19 @@ class GovernanceSettings(BaseSettings):
 
     # Drop free-text metadata (title, description) before it reaches a model.
     minimise_metadata: bool = False
+    mutation_budget: int = Field(default=25, ge=1, le=1000)
+    allow_repository_changes: bool = True
+    allow_access_changes: bool = True
+    allow_repository_actions: bool = True
 
     @field_validator("allowed_model_hosts", mode="before")
     @classmethod
     def _split_hosts(cls, value: str | list[str]) -> list[str]:
+        return _csv(value)
+
+    @field_validator("admin_groups", mode="before")
+    @classmethod
+    def _split_admin_groups(cls, value: str | list[str]) -> list[str]:
         return _csv(value)
 
 
@@ -200,6 +226,7 @@ class Settings(BaseSettings):
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     web: WebSettings = Field(default_factory=WebSettings)
+    semantic: SemanticSettings = Field(default_factory=SemanticSettings)
     governance: GovernanceSettings = Field(default_factory=GovernanceSettings)
 
 

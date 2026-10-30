@@ -21,6 +21,8 @@ def client() -> Mock:
     stub.username = "admin"
     stub.get_node_details.return_value = {
         "name": "original-name",
+        "nodeType": "cm:folder",
+        "isFolder": True,
         "parentId": "home",
         "aspectNames": ["cm:titled"],
         "properties": {"cm:title": "Original title"},

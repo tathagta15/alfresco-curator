@@ -29,6 +29,7 @@ from alfresco_curator import governance, llm
 from alfresco_curator.agent import semantic
 from alfresco_curator.agent.cache import TTLCache
 from alfresco_curator.agent.context import references_prior_results
+from alfresco_curator.agent.guardrails import ungrounded_numbers, unsupported_absence_claim
 from alfresco_curator.alfresco import afts
 from alfresco_curator.alfresco.client import AlfrescoClient
 from alfresco_curator.diagnostics import tracer
@@ -72,6 +73,10 @@ Rules:
   not be searchable yet", never "your document exists but is not indexed".
 - If the evidence is genuinely inconclusive, say that and name the one check
   that would settle it.
+- A zero-hit query proves only that no matching, accessible items were returned
+    for those filters. Never conclude a document or folder does not exist, or is
+    empty, from search results alone.
+- Report only numbers present in the supplied evidence.
 - Be brief. Three or four sentences per section at most.
 """
 
@@ -475,10 +480,13 @@ class SearchAgent:
             "relaxedHits": state.get("relaxed_total"),
             "pipeline": state.get("infra"),
         }
+        evidence_text = "\n".join(
+            f"{key}: {value}" for key, value in evidence.items() if value is not None
+        )
         try:
             report = self._write(
                 POSTMORTEM_PROMPT,
-                "\n".join(f"{k}: {v}" for k, v in evidence.items() if v is not None),
+                evidence_text,
             )
         except LLMError as exc:
             report = (
@@ -486,6 +494,14 @@ class SearchAgent:
                 f"### Why\nThe postmortem model was unavailable ({exc}).\n\n"
                 "### Fix\nUse the clause evidence above."
             )
+        unsupported = ungrounded_numbers(report, evidence_text)
+        if unsupported or unsupported_absence_claim(report):
+            log.warning(
+                "replacing ungrounded zero-hit summary (unsupported_numbers=%d, absence_claim=%s)",
+                len(unsupported),
+                unsupported_absence_claim(report),
+            )
+            report = self._grounded_zero_hit_report(state)
         # "unknown" is the starting value, not a conclusion: reaching this point
         # with no stage having set a cause means the query is what failed.
         settled = state.get("cause")
@@ -494,6 +510,26 @@ class SearchAgent:
             "cause": settled if settled and settled != "unknown" else "query",
             "steps": [_step("report", "wrote the postmortem")],
         }
+
+    @staticmethod
+    def _grounded_zero_hit_report(state: AgentState) -> str:
+        evidence = []
+        for row in state.get("clause_counts", []):
+            if row.get("hits") is not None:
+                evidence.append(f"- Clause `{row.get('clause', '')}`: {row['hits']} hit(s).")
+        for row in state.get("path_reach", []):
+            if row.get("hits") is not None:
+                evidence.append(f"- Path probe `{row.get('path', '')}`: {row['hits']} hit(s).")
+        if not evidence:
+            evidence.append("- No clause or path probe isolated the cause.")
+        return (
+            "### What happened\nThe exact search returned no accessible matches.\n\n"
+            "### Why\n"
+            + "\n".join(evidence)
+            + "\nThese probes describe this user's search visibility only; they do not prove "
+            "that the document or folder is absent or empty.\n\n"
+            "### Fix\nCheck the folder path and query filters, or search with a broader phrase."
+        )
 
     def _match_evidence(self, state: AgentState) -> list[dict[str, Any]]:
         """Which clauses each listed hit provably satisfies.

@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
 
+from alfresco_curator import governance
 from alfresco_curator.agent.actions import AuditLog, _thin
 from alfresco_curator.alfresco.client import AlfrescoClient
-from alfresco_curator.errors import AlfrescoError
+from alfresco_curator.errors import AlfrescoError, explain_alfresco_error, is_repository_read_only
 
 log = logging.getLogger(__name__)
 
@@ -38,19 +40,61 @@ MUTATING_CAPABILITIES = (
     "add_group_member",
     "create_site",
     "add_site_member",
+    "create_folder_rule",
 )
 
 
-def build_capability_tools(client: AlfrescoClient, audit: AuditLog) -> list[StructuredTool]:
+class FolderRuleCondition(BaseModel):
+    field: str = Field(min_length=1, max_length=255)
+    comparator: str = Field(min_length=1, max_length=64)
+    parameter: str = Field(min_length=1, max_length=1000)
+
+
+def build_capability_tools(
+    client: AlfrescoClient,
+    audit: AuditLog,
+    *,
+    allow_writes: bool = True,
+) -> list[StructuredTool]:
     def audited(name: str, call, arguments: dict[str, Any]) -> dict[str, Any]:
         entry = audit.record(name, arguments, client.username or "unknown")
+        if audit.write_blocked_reason:
+            entry.outcome, entry.detail = "failed", audit.write_blocked_reason
+            governance.record_decision(
+                name, arguments, entry.user, entry.outcome, reversible=False, detail=entry.detail
+            )
+            return {"ok": False, "error": audit.write_blocked_reason}
+        denied = governance.change_denial(name)
+        if denied:
+            entry.outcome, entry.detail = "failed", denied
+            governance.record_decision(
+                name, arguments, entry.user, entry.outcome, reversible=False, detail=denied
+            )
+            return {"ok": False, "error": denied}
+        audit.budget.limit = governance.effective_policy()["mutation_budget"]
+        over = audit.budget.take(name)
+        if over:
+            entry.outcome, entry.detail = "failed", over
+            governance.record_decision(
+                name, arguments, entry.user, entry.outcome, reversible=False, detail=entry.detail
+            )
+            return {"ok": False, "error": over}
         try:
             result = call()
         except AlfrescoError as exc:
-            entry.outcome, entry.detail = "failed", str(exc)
-            return {"ok": False, "error": str(exc)}
+            entry.outcome, entry.detail = "failed", explain_alfresco_error(exc)
+            if is_repository_read_only(exc):
+                audit.write_blocked_reason = entry.detail
+            governance.record_decision(
+                name, arguments, entry.user, entry.outcome, reversible=False, detail=entry.detail
+            )
+            return {"ok": False, "error": entry.detail}
         entry.outcome = "ok"
         entry.detail = result.get("id", "") if isinstance(result, dict) else ""
+        entry.created_id = entry.detail
+        governance.record_decision(
+            name, arguments, entry.user, entry.outcome, reversible=False, detail=entry.detail
+        )
         return {"ok": True, "result": result}
 
     def read(call) -> dict[str, Any]:
@@ -75,6 +119,123 @@ def build_capability_tools(client: AlfrescoClient, audit: AuditLog) -> list[Stru
     def describe_action(action_id: str) -> dict[str, Any]:
         """The parameters an action takes, so a call can be built correctly."""
         return read(lambda: client.action_definition(action_id))
+
+    def find_folders(name: str) -> dict[str, Any]:
+        """Resolve an exact human folder name to accessible node IDs and paths."""
+        return read(lambda: {"matches": client.find_folders(name)})
+
+    def resolve_folder(reference: str) -> tuple[str, dict[str, Any]]:
+        try:
+            folder_id = client.resolve_node_id(reference)
+            folder = client.get_node_details(folder_id)
+        except AlfrescoError as exc:
+            if exc.status_code not in (400, 404):
+                raise
+            matches = client.find_folders(reference)
+            if len(matches) > 1:
+                paths = ", ".join(match.get("path") or match["id"] for match in matches[:10])
+                raise AlfrescoError(
+                    409,
+                    f"Several accessible folders are named {reference!r}: {paths}. "
+                    "Ask which path the user means.",
+                ) from exc
+            if not matches:
+                raise AlfrescoError(
+                    404,
+                    f"No accessible folder named {reference!r} was found. Ask for its full path.",
+                ) from exc
+            folder_id = matches[0]["id"]
+            folder = client.get_node_details(folder_id)
+        if folder.get("nodeType") != "cm:folder" and folder.get("isFolder") is not True:
+            raise AlfrescoError(400, f"{reference!r} is not a folder.")
+        return folder_id, folder
+
+    def list_folder_rules(folder: str) -> dict[str, Any]:
+        """List rules attached to a folder, using this user's repository access."""
+        try:
+            folder_id, details = resolve_folder(folder)
+            return {
+                "ok": True,
+                "result": {
+                    "folder": {
+                        "id": folder_id,
+                        "name": details.get("name"),
+                        "path": details.get("path"),
+                    },
+                    "rules": client.folder_rules(folder_id),
+                },
+            }
+        except AlfrescoError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def create_folder_rule(
+        folder: str,
+        name: str,
+        action_id: str,
+        trigger: Literal["inbound", "update", "outbound"] = "inbound",
+        description: str = "",
+        inheritable: bool = False,
+        params: dict[str, Any] | None = None,
+        conditions: list[FolderRuleCondition] | None = None,
+        boolean_mode: Literal["and", "or"] = "and",
+        apply_to_all: bool = False,
+    ) -> dict[str, Any]:
+        """Create an Alfresco document-management rule attached to a folder."""
+        clean_name = name.strip()
+        if not clean_name or len(clean_name) > 200:
+            return {"ok": False, "error": "Rule name must be between 1 and 200 characters."}
+        condition_values = [condition.model_dump() for condition in conditions or []]
+        if not condition_values and not apply_to_all:
+            return {
+                "ok": False,
+                "error": "Add at least one condition, or explicitly set apply_to_all=true "
+                "for every item in the folder.",
+            }
+        if condition_values and apply_to_all:
+            return {"ok": False, "error": "Use conditions or apply_to_all, not both."}
+
+        arguments = {
+            "folder": folder,
+            "name": clean_name,
+            "action_id": action_id,
+            "trigger": trigger,
+            "description": description,
+            "inheritable": inheritable,
+            "params": params or {},
+            "conditions": condition_values,
+            "boolean_mode": boolean_mode,
+            "apply_to_all": apply_to_all,
+        }
+
+        def create() -> dict[str, Any]:
+            folder_id, _ = resolve_folder(folder)
+            available_actions = {action["id"] for action in client.actions_for_node(folder_id)}
+            if action_id not in available_actions:
+                raise AlfrescoError(
+                    400,
+                    f"Action {action_id!r} is not available for folder {folder!r}.",
+                )
+            definition = client.action_definition(action_id)
+            if not definition:
+                raise AlfrescoError(404, f"Alfresco action {action_id!r} was not found.")
+            rule: dict[str, Any] = {
+                "name": clean_name,
+                "description": description,
+                "isEnabled": True,
+                "isInheritable": inheritable,
+                "triggers": [trigger],
+                "actions": [{"actionDefinitionId": action_id, "params": params or {}}],
+            }
+            if condition_values:
+                rule["conditions"] = {
+                    "booleanMode": boolean_mode,
+                    "inverted": False,
+                    "compositeConditions": [],
+                    "simpleConditions": condition_values,
+                }
+            return client.create_folder_rule(folder_id, rule)
+
+        return audited("create_folder_rule", create, arguments)
 
     def run_action(action_id: str, node_id: str, params: Any = None) -> dict[str, Any]:
         # Models routinely serialise a nested object as a JSON string; that is
@@ -209,6 +370,28 @@ def build_capability_tools(client: AlfrescoClient, audit: AuditLog) -> list[Stru
             "Call this before run_action so the parameters are correct.",
         ),
         (
+            find_folders,
+            "find_folders",
+            "Resolve an exact folder name to node IDs and paths visible to the signed-in user. "
+            "Call this before proposing create_folder when the user names a parent folder. "
+            "If multiple matches are returned, ask which path they mean; never guess.",
+        ),
+        (
+            list_folder_rules,
+            "list_folder_rules",
+            "List the document-management rules attached to an ACL-visible Alfresco folder.",
+        ),
+        (
+            create_folder_rule,
+            "create_folder_rule",
+            "Create an Alfresco document-management rule attached to a folder. "
+            "Resolve the folder, then use list_actions and describe_action to verify the action "
+            "and parameters. Rules affect future items, not existing content. "
+            "Ask for conditions unless the user explicitly wants every item, then set "
+            "apply_to_all=true. "
+            "Always present the full rule for human approval.",
+        ),
+        (
             run_action,
             "run_action",
             "Execute any repository action on a node. Runs asynchronously, so "
@@ -232,4 +415,6 @@ def build_capability_tools(client: AlfrescoClient, audit: AuditLog) -> list[Stru
     return [
         StructuredTool.from_function(func=func, name=name, description=description)
         for func, name, description in specs
+        if name not in MUTATING_CAPABILITIES
+        or (allow_writes and not governance.change_denial(name))
     ]

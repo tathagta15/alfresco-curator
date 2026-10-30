@@ -7,6 +7,8 @@ care which subsystem failed.
 
 from __future__ import annotations
 
+import re
+
 
 class CuratorError(Exception):
     """Base for every error raised by this application."""
@@ -23,6 +25,25 @@ class AlfrescoError(CuratorError):
         super().__init__(f"HTTP {status_code}: {message}" if status_code else message)
         self.status_code = status_code
         self.message = message
+
+
+_READ_ONLY = re.compile(r"read.only mode", re.IGNORECASE)
+
+
+def is_repository_read_only(exc: AlfrescoError) -> bool:
+    return exc.status_code == 403 and bool(_READ_ONLY.search(f"{exc.message} {exc}"))
+
+
+def explain_alfresco_error(exc: AlfrescoError) -> str:
+    """Separate a repository-wide licence lock from an ordinary ACL denial."""
+    if is_repository_read_only(exc):
+        return (
+            "The Alfresco repository is in read-only mode; no change was made. "
+            "This commonly means its licence is expired or missing. Ask an "
+            "Alfresco administrator to restore write access, then reconnect. "
+            f"Repository detail: {exc.message}"
+        )
+    return str(exc)
 
 
 class SessionExpiredError(AlfrescoError):

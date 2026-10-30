@@ -20,10 +20,11 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
+from langsmith.run_helpers import tracing_context
 
 from alfresco_curator.config import LLMSettings, get_settings
 from alfresco_curator.errors import LLMError
-from alfresco_curator.governance.policy import assert_endpoint_allowed
+from alfresco_curator.governance.policy import assert_endpoint_allowed, effective_policy
 from alfresco_curator.llm import models as catalogue
 
 log = logging.getLogger(__name__)
@@ -183,7 +184,8 @@ def _attempted() -> str:
 
 def _invoke(chain: Runnable, system: str, user: str) -> Any:
     try:
-        return chain.invoke({"system": system, "user": user})
+        with tracing_context(enabled=effective_policy()["trace_to_third_party"]):
+            return chain.invoke({"system": system, "user": user})
     except (LLMError, OutputParserException):
         raise
     except Exception as exc:
@@ -246,9 +248,10 @@ def stream_text(system: str, user: str, *, temperature: float = 0.0) -> Iterator
     """
     chain = text_chain(temperature=temperature)
     try:
-        for chunk in chain.stream({"system": system, "user": user}):
-            if chunk:
-                yield chunk if isinstance(chunk, str) else str(chunk)
+        with tracing_context(enabled=effective_policy()["trace_to_third_party"]):
+            for chunk in chain.stream({"system": system, "user": user}):
+                if chunk:
+                    yield chunk if isinstance(chunk, str) else str(chunk)
     except Exception as exc:
         raise LLMError(
             f"{provider()} stream failed - {_brief(exc)} (tried: {_attempted()})"

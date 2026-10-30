@@ -80,6 +80,8 @@ class Ledger:
         actor: str,
         detail: dict[str, Any],
         session: str = "",
+        *,
+        strict: bool = False,
     ) -> dict[str, Any]:
         body = {
             "at": time.time(),
@@ -102,6 +104,8 @@ class Ledger:
                     # A failed audit write must not take the user's request
                     # down with it, but it must be loud.
                     log.error("governance ledger write failed: %s", exc)
+                    if strict:
+                        raise
                     return record
             self._last = str(record["hash"])
         return record

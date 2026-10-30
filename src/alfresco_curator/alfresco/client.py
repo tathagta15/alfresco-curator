@@ -242,6 +242,30 @@ class AlfrescoClient:
             return resp.json()["entry"]["id"]
         return reference
 
+    def find_folders(self, name: str, max_items: int = 100) -> list[dict[str, Any]]:
+        """Find exact-name folders visible to this user's repository ticket."""
+        name = (name or "").strip()
+        if not name or len(name) > 255 or any(char in name for char in '"\\'):
+            raise AlfrescoError(
+                400, "folder name must be exact and contain no quotes or backslashes"
+            )
+        language = self.detect_query_language()
+        clause = f'=cm:name:"{name}"' if language == "afts" else f'cm:name:"{name}"'
+        payload = self.search_afts(
+            f'TYPE:"cm:folder" AND {clause}', max_items=max_items, language=language
+        )
+        entries = payload.get("list", {}).get("entries", [])
+        return [
+            {
+                "id": entry.get("id"),
+                "name": entry.get("name"),
+                "path": (entry.get("path") or {}).get("name"),
+            }
+            for item in entries
+            if (entry := item.get("entry", {})).get("name") == name
+            and entry.get("nodeType") == "cm:folder"
+        ]
+
     def is_deleted(self, node_id: str) -> bool:
         """True when the node is in the trashcan, which removes it from the index."""
         try:
@@ -254,10 +278,21 @@ class AlfrescoClient:
     # Every call below runs as the signed-in user, so the repository applies
     # that user's permissions rather than anything the agent believes.
 
-    def create_folder(self, parent_id: str, name: str, title: str | None = None) -> dict[str, Any]:
+    def create_folder(
+        self,
+        parent_id: str,
+        name: str,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
         body: dict[str, Any] = {"name": name, "nodeType": "cm:folder"}
+        properties = {}
         if title:
-            body["properties"] = {"cm:title": title}
+            properties["cm:title"] = title
+        if description:
+            properties["cm:description"] = description
+        if properties:
+            body["properties"] = properties
         resp = self._send("POST", f"{CORE_API}/nodes/{parent_id}/children", json=body)
         return resp.json()["entry"]
 
@@ -371,6 +406,29 @@ class AlfrescoClient:
         if params:
             body["params"] = params
         return self._send("POST", f"{CORE_API}/action-executions", json=body).json()["entry"]
+
+    def folder_rules(self, folder_id: str, max_items: int = 100) -> list[dict[str, Any]]:
+        """List rules attached to a folder's default rule set."""
+        try:
+            response = self._send(
+                "GET",
+                f"{CORE_API}/nodes/{folder_id}/rule-sets/-default-/rules",
+                params={"maxItems": max_items},
+            ).json()
+        except AlfrescoError as exc:
+            if exc.status_code == 404:
+                return []
+            raise
+        return [item["entry"] for item in response.get("list", {}).get("entries", [])]
+
+    def create_folder_rule(self, folder_id: str, rule: dict[str, Any]) -> dict[str, Any]:
+        """Create an ACS document-management rule on a folder."""
+        response = self._send(
+            "POST",
+            f"{CORE_API}/nodes/{folder_id}/rule-sets/-default-/rules",
+            json=rule,
+        ).json()
+        return response.get("entry", response)
 
     # --------------------------------------------------------------- versions
     def versions(self, node_id: str) -> list[dict[str, Any]]:

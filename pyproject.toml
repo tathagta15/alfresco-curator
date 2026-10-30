@@ -31,6 +31,7 @@ dependencies = [
     "langchain-openai>=1.0",
     "langgraph>=1.0",
     "deepagents>=0.7",
+    "fastembed>=0.7.0,<1.0",
     # Gemini is the stand-in when the primary provider hits a daily quota.
     "langchain-google-genai>=3.0",
 ]

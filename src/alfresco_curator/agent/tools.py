@@ -19,6 +19,7 @@ from langchain_core.tools import StructuredTool
 from alfresco_curator import governance
 from alfresco_curator.agent.guardrails import guard_result
 from alfresco_curator.alfresco.client import AlfrescoClient
+from alfresco_curator.config import get_settings
 from alfresco_curator.diagnostics.search_debugger import (
     analyse_conflict,
     analyse_empty_result,
@@ -103,6 +104,43 @@ def build_tools(client: AlfrescoClient, telemetry: Telemetry | None = None) -> l
             return {"ok": False, "error": "telemetry is not configured"}
         return safely(lambda: {"pipeline": trace_node(client, node_id, telemetry, "")})
 
+    def recommend_embeddings() -> dict[str, Any]:
+        """Explain local suggestion embeddings and the separate search boundary."""
+        semantic = get_settings().semantic
+        return {
+            "current": {
+                "search": "Alfresco AFTS plus concept expansion after lexical zero hits",
+                "vectorSearchEnabled": False,
+                "suggestionEmbeddingsEnabled": semantic.enabled,
+                "suggestionEmbeddingModel": semantic.model_name if semantic.enabled else None,
+                "embeddedFields": ["name", "path"],
+                "reason": (
+                    "Local CPU embeddings rank suggestion chips only; document retrieval remains "
+                    "AFTS under the signed-in user's ticket."
+                ),
+            },
+            "recommended": {
+                "placement": (
+                    "For full vector retrieval, use an on-prem or approved EEA-hosted index"
+                ),
+                "retrieval": [
+                    "Keep AFTS for exact metadata filters and repository-native search.",
+                    "Use vectors only to improve candidate recall for concept-based requests.",
+                    "Store Alfresco node IDs and version stamps with each vector; do not copy ACLs "
+                    "as the authorization source.",
+                    "Re-fetch every candidate through this signed-in user's Alfresco ticket "
+                    "before showing it.",
+                ],
+                "lifecycle": [
+                    "Synchronize updates, versions, moves and deletes; remove stale vectors.",
+                    "Keep embeddings and source text inside the approved security boundary.",
+                    "Evaluate recall and false positives using permission-filtered queries "
+                    "and deletion tests.",
+                ],
+            },
+            "securityBoundary": "Alfresco remains the source of truth and ACL enforcement point.",
+        }
+
     specs = [
         (search, "search_repository", "Run a repository query and return the hits."),
         (
@@ -133,6 +171,13 @@ def build_tools(client: AlfrescoClient, telemetry: Telemetry | None = None) -> l
             "trace_pipeline",
             "Trace repository, indexer, broker and Elasticsearch for one node. "
             "Costs several round trips, so use it only once the query is cleared.",
+        ),
+        (
+            recommend_embeddings,
+            "recommend_embeddings",
+            "Explain current search capabilities and recommend an ACL-preserving embedding "
+            "architecture. "
+            "Always distinguish configured behavior from future recommendations.",
         ),
     ]
     return [

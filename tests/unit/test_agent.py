@@ -164,6 +164,39 @@ class TestRecover:
 
 
 class TestReport:
+    def test_zero_hit_postmortem_replaces_unsupported_absence_claim(self, agent):
+        with patch("alfresco_curator.agent.graph.llm") as model:
+            model.complete.return_value = (
+                "### What happened\nThe path probe proves no content exists in Policies."
+            )
+            result = agent.report(
+                {
+                    "total": 0,
+                    "cause": "query",
+                    "afts_query": 'TYPE:"cm:content" AND PATH:"/Company Home/Policies//*"',
+                    "path_reach": [{"path": "/Company Home/Policies", "hits": 0, "exact": True}],
+                }
+            )
+
+        assert "do not prove" in result["report"]
+        assert "proves no content exists" not in result["report"]
+        assert "/Company Home/Policies" in result["report"]
+
+    def test_zero_hit_postmortem_replaces_invented_counts(self, agent):
+        with patch("alfresco_curator.agent.graph.llm") as model:
+            model.complete.return_value = "### Why\nThere are 4,000 matching documents."
+            result = agent.report(
+                {
+                    "total": 0,
+                    "cause": "query",
+                    "afts_query": 'cm:name:"missing.pdf"',
+                    "clause_counts": [{"clause": 'cm:name:"missing.pdf"', "hits": 0}],
+                }
+            )
+
+        assert "4,000" not in result["report"]
+        assert "0 hit(s)" in result["report"]
+
     def test_a_dead_clause_is_reported_as_a_query_fault_not_inconclusive(self, agent):
         # "unknown" is the starting value and is truthy, so a naive `or`
         # fallback would leave a settled diagnosis labelled inconclusive.

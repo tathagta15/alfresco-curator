@@ -121,3 +121,101 @@ class TestMinimisation:
         # survive minimisation by design.
         minimised = policy.minimise({"name": "a.pdf", "path": "/x"}, self._settings(True))
         assert minimised == {"name": "a.pdf", "path": "/x"}
+
+
+class TestPolicyOverride:
+    def _settings(self, path):
+        return Settings(
+            _env_file=None,
+            llm=LLMSettings(_env_file=None, LANGSMITH_TRACING=False),
+            governance=GovernanceSettings(
+                _env_file=None,
+                policy_path=str(path),
+                allowed_model_hosts=["deployment.example.eu"],
+                minimise_metadata=False,
+                mutation_budget=25,
+            ),
+        )
+
+    def test_persists_override_and_applies_it_without_restarting(self, tmp_path):
+        settings = self._settings(tmp_path / "policy.json")
+        policy.write_policy_override(
+            ["ollama.internal"],
+            True,
+            settings,
+            trace_to_third_party=True,
+            mutation_budget=7,
+            allow_repository_changes=False,
+            allow_access_changes=False,
+            allow_repository_actions=False,
+        )
+
+        assert policy.effective_policy(settings) == {
+            "allowed_model_hosts": ["ollama.internal"],
+            "minimise_metadata": True,
+            "trace_to_third_party": True,
+            "mutation_budget": 7,
+            "allow_repository_changes": False,
+            "allow_access_changes": False,
+            "allow_repository_actions": False,
+            "overridden": True,
+        }
+        assert policy.minimise({"title": "private", "name": "safe"}, settings) == {"name": "safe"}
+
+    def test_reset_restores_deployment_defaults(self, tmp_path):
+        settings = self._settings(tmp_path / "policy.json")
+        policy.write_policy_override(
+            ["ollama.internal"], True, settings, trace_to_third_party=True, mutation_budget=7
+        )
+        policy.reset_policy_override(settings)
+
+        assert policy.effective_policy(settings) == {
+            "allowed_model_hosts": ["deployment.example.eu"],
+            "minimise_metadata": False,
+            "trace_to_third_party": False,
+            "mutation_budget": 25,
+            "allow_repository_changes": True,
+            "allow_access_changes": True,
+            "allow_repository_actions": True,
+            "overridden": False,
+        }
+
+    @pytest.mark.parametrize("budget", [0, -1, 1001, True])
+    def test_rejects_out_of_range_or_non_integer_budgets(self, tmp_path, budget):
+        settings = self._settings(tmp_path / "policy.json")
+        with pytest.raises(ValueError):
+            policy.write_policy_override(
+                ["ollama.internal"], True, settings, mutation_budget=budget
+            )
+
+    @pytest.mark.parametrize("host", ["https://llm.example", "llm.example/path", "*.example.eu"])
+    def test_rejects_urls_paths_and_wildcards(self, host):
+        with pytest.raises(ValueError):
+            policy.normalise_hosts([host])
+
+    def test_normalises_and_deduplicates_exact_hosts(self):
+        assert policy.normalise_hosts([" LLM.Example.EU. ", "llm.example.eu"]) == ["llm.example.eu"]
+
+
+class TestChangeGates:
+    @pytest.mark.parametrize(
+        ("action", "settings", "expected"),
+        [
+            ("create_folder", {"allow_repository_changes": False}, "Repository changes are paused"),
+            (
+                "grant_permission",
+                {"allow_access_changes": False},
+                "Sharing and access changes are disabled",
+            ),
+            (
+                "run_action",
+                {"allow_repository_actions": False},
+                "Alfresco repository actions are disabled",
+            ),
+            ("create_folder", {}, ""),
+        ],
+    )
+    def test_reports_the_policy_gate_for_a_change(self, monkeypatch, action, settings, expected):
+        monkeypatch.setattr(policy, "effective_policy", lambda: settings)
+
+        assert policy.change_denial(action).startswith(expected)

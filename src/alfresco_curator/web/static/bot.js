@@ -21,8 +21,14 @@ const SUGGESTIONS = [
   "where is the Kubernetes migration runbook",
   "tag every UNPAID invoice in Finance as 'overdue'",
   "create a folder 'Q4 Reports' in Shared",
+  "Create a rule on Finance: when a PDF arrives, add the cm:versionable aspect.",
   "what can you do to this repository?",
+  "recommend an embedding setup that preserves Alfresco permissions",
 ];
+let activeSuggestions = SUGGESTIONS;
+let suggestionRevision = 0;
+let lastTurnContext = null;
+let suggestionLoading = false;
 
 const ROUTE_BADGE = {
   search: { label: "Searching", title: "Reading only \u2014 nothing will be changed" },
@@ -147,14 +153,70 @@ function typing() {
   return node;
 }
 
-function trail(steps) {
-  const node = document.createElement("div");
-  node.className = "trail";
-  node.innerHTML = steps
-    .map((s) => `<span class="chip done" title="${escapeHtml(s.detail || "")}">${escapeHtml(s.node)}</span>`)
-    .join("");
+const STEP_LABELS = {
+  search_repository: "Search Alfresco",
+  clause_reach: "Check query terms",
+  narrow_conflict: "Compare query filters",
+  path_reach: "Check folder path",
+  trace_pipeline: "Trace the indexing pipeline",
+  list_actions: "Discover repository actions",
+  find_folders: "Resolve folder names",
+  list_folder_rules: "Read folder rules",
+  list_versions: "Read version history",
+  add_tag: "Add tag",
+  create_folder: "Create folder",
+};
+
+function stepLabel(step) {
+  const raw = String(step?.node || "Agent step");
+  return STEP_LABELS[raw] || raw.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function createTrace() {
+  const node = document.createElement("details");
+  node.className = "activity-trace";
+  node.open = true;
+  node.innerHTML = `<summary><strong>Activity trace</strong><span class="trace-count">0 steps</span></summary><ol class="trace-list"></ol>`;
   $("log").append(node);
+  return node;
+}
+
+function appendTraceStep(node, step, pending = false) {
+  node = node || createTrace();
+  const row = document.createElement("li");
+  row.className = `trace-step${pending ? " pending" : " done"}`;
+  row.dataset.node = String(step?.node || "");
+  row.title = String(step?.detail || "");
+  const detail = String(step?.detail || "").trim();
+  row.innerHTML = `<span class="trace-mark" aria-hidden="true">${pending ? "…" : "✓"}</span>
+    <span class="trace-copy"><strong>${escapeHtml(stepLabel(step))}</strong>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</span>
+    <span class="trace-state">${pending ? "Needs approval" : "Complete"}</span>
+    <time>${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>`;
+  node.querySelector(".trace-list").append(row);
+  const count = node.querySelectorAll(".trace-step").length;
+  node.querySelector(".trace-count").textContent = `${count} step${count === 1 ? "" : "s"}`;
   scrollDown();
+  return node;
+}
+
+function trail(steps, { node = null, pendingActions = [] } = {}) {
+  const pending = new Set(pendingActions);
+  for (const step of steps || []) node = appendTraceStep(node, step, pending.has(step.node));
+  return node;
+}
+
+function settleTrace(node, audit = []) {
+  if (!node) return;
+  for (const entry of audit) {
+    const row = [...node.querySelectorAll(".trace-step.pending")]
+      .reverse()
+      .find((item) => item.dataset.node === entry.action);
+    if (!row) continue;
+    row.classList.remove("pending");
+    row.classList.add(entry.outcome === "ok" ? "done" : "failed");
+    row.querySelector(".trace-mark").textContent = entry.outcome === "ok" ? "✓" : "!";
+    row.querySelector(".trace-state").textContent = entry.outcome === "ok" ? "Complete" : "Blocked";
+  }
 }
 
 function verdict(cause) {
@@ -370,10 +432,12 @@ let SHARE_BASE = "";
 let PAGE = null;
 
 function onContext(context) {
+  const previous = JSON.stringify(PAGE);
   PAGE = context && (context.folderId || context.folderName || (context.selected || []).length)
     ? context
     : null;
   renderContext();
+  if (previous !== JSON.stringify(PAGE)) void refreshSuggestions();
 }
 
 function renderContext() {
@@ -449,6 +513,7 @@ async function connect(auth) {
       false,
     );
     SHARE_BASE = state.shareBaseUrl || SHARE_BASE;
+    void refreshSuggestions();
     return true;
   } catch (error) {
     say(`I could not sign in to Alfresco: ${escapeHtml(error.message)}`);
@@ -460,6 +525,10 @@ async function connect(auth) {
 async function ask(prompt) {
   if (busy || !prompt.trim()) return;
   busy = true;
+  suggestionRevision += 1;
+  suggestionLoading = false;
+  lastTurnContext = { prompt, route: null, outcome: "unknown", files: [], actions: [] };
+  activeSuggestions = [];
   $("send").disabled = true;
   $("suggestions").innerHTML = "";
   $("log").classList.remove("empty");
@@ -485,6 +554,7 @@ async function ask(prompt) {
     $("send").disabled = false;
     renderSuggestions();
     saveConversation();
+    void refreshSuggestions();
     $("prompt").focus();
   }
 }
@@ -511,7 +581,7 @@ async function streamAsk(prompt, dots) {
   const decoder = new TextDecoder();
   let buffer = "";
   let live = null;        // the bubble the report is being written into
-  let trailNode = null;   // the chips, appended to as stages finish
+  let trailNode = null;   // the activity trace, appended to as stages finish
   let expired = false;
   // The deep agent's approval loop outlives the stream, and leaving it
   // detached would re-enable the composer while cards were still waiting.
@@ -524,7 +594,7 @@ async function streamAsk(prompt, dots) {
       startClock(LABEL[data.route] || "working on it");
     } else if (name === "step") {
       dots.remove();
-      trailNode = chip(trailNode, data.step);
+        trailNode = chip(trailNode, data.step);
     } else if (name === "token") {
       dots.remove();
       live = live || say("");
@@ -532,10 +602,10 @@ async function streamAsk(prompt, dots) {
       live.innerHTML = markdown(live.dataset.raw);
       scrollDown();
     } else if (name === "search") {
-      renderSearch(data, dots, live);
+      renderSearch(data, dots, live, trailNode);
       live = null;
     } else if (name === "deep") {
-      pending = renderDeep(data, dots);
+      pending = renderDeep(data, dots, trailNode);
     } else if (name === "undo") {
       dots.remove();
       reportUndo(data);
@@ -588,18 +658,7 @@ const LABEL = {
 
 /* One trail that grows, rather than a new row per stage. */
 function chip(node, step) {
-  if (!node) {
-    node = document.createElement("div");
-    node.className = "trail";
-    $("log").append(node);
-  }
-  const span = document.createElement("span");
-  span.className = "chip done";
-  span.title = step.detail || "";
-  span.textContent = step.node;
-  node.append(span);
-  scrollDown();
-  return node;
+  return appendTraceStep(node, step);
 }
 
 function renderWhole(data, dots) {
@@ -621,6 +680,7 @@ function renderWhole(data, dots) {
 /* The decision is shown, not hidden: a system that routes on the user's
  * behalf has to be able to say what it chose and why. */
 function showRoute(route, reason) {
+  if (lastTurnContext) lastTurnContext.route = route;
   const badge = ROUTE_BADGE[route] || ROUTE_BADGE.search;
   const node = $("routeBadge");
   node.textContent = badge.label;
@@ -646,12 +706,12 @@ function explain(message) {
   return `<h3>That did not work</h3><p>${escapeHtml(text)}</p>`;
 }
 
-function renderSearch(data, dots, streamed = null) {
+function renderSearch(data, dots, streamed = null, traceNode = null) {
   dots.remove();
-  // When the run was streamed the chips are already on screen and the report
-  // has been written into `streamed` as it arrived; re-rendering either would
-  // show the answer twice.
-  if (!streamed) trail(data.steps || []);
+  // Reconcile streamed steps with the final trace without duplicating them.
+  const tracedCount = traceNode?.querySelectorAll(".trace-step").length || 0;
+  const remainingSteps = (data.steps || []).slice(tracedCount);
+  if (remainingSteps.length) traceNode = trail(remainingSteps, { node: traceNode });
   score.probes += (data.steps || []).length;
   verdict(data.cause);
 
@@ -678,31 +738,56 @@ function renderSearch(data, dots, streamed = null) {
     award("first-explain", "\u2691", "Case closed", "explained a zero-hit search");
     completeQuest("explain");
   }
+  lastTurnContext = {
+    ...(lastTurnContext || {}),
+    route: "search",
+    outcome: data.cause || "unknown",
+    files: (data.results || []).slice(0, 5).map((doc) => ({
+      name: doc.name || "",
+      path: doc.path || "",
+    })),
+    actions: (data.steps || []).map((step) => step.node).slice(0, 8),
+  };
   bumpScore();
 }
 
 /* The agent pauses before every change, so this is a loop: run, ask, resume. */
-async function renderDeep(data, dots) {
+async function renderDeep(data, dots, traceNode = null) {
   dots.remove();
 
+  const turnAudit = [...(data.turnAudit || [])];
   let round = 0;
+  let tracedSteps = 0;
+  const appendNewSteps = () => {
+    const steps = data.steps || [];
+    if (steps.length < tracedSteps) tracedSteps = 0;
+    traceNode = trail(steps.slice(tracedSteps), {
+      node: traceNode,
+      pendingActions: (data.pending || []).map((item) => item.action),
+    });
+    tracedSteps = steps.length;
+  };
   while (data.pending?.length && round < 12) {
     round += 1;
-    trail(data.steps || []);
+    stopClock();
+    appendNewSteps();
     planPanel(data.todos);
     mood("waiting", `${data.pending.length} change${data.pending.length === 1 ? "" : "s"} need you`);
 
     const decisions = await collectDecisions(data.pending);
     mood("thinking", "applying\u2026");
+    startClock("applying the approved changes");
     const working = typing();
     data = await api("/api/agent/deep/resume", {
       method: "POST",
       body: JSON.stringify({ thread_id: THREAD, decisions }),
     });
+    turnAudit.push(...(data.turnAudit || []));
+    settleTrace(traceNode, data.turnAudit || []);
     working.remove();
   }
 
-  trail(data.steps || []);
+  appendNewSteps();
   planPanel(data.todos);
   score.probes += (data.steps || []).length;
   score.applied = data.changed || score.applied;
@@ -710,13 +795,36 @@ async function renderDeep(data, dots) {
   if (score.applied) award("first-change", "\u2691", "Hands on", "a change applied and audited");
   if (score.applied) completeQuest("act");
 
-  const refused = (data.audit || []).filter((entry) => entry.outcome === "failed").length;
-  if (refused) {
-    say(banner(`${refused} change${refused === 1 ? " was" : "s were"} refused by Alfresco permissions.`));
+  const succeededTargets = new Set(
+    turnAudit.filter((entry) => entry.outcome === "ok").map(actionTarget),
+  );
+  const rejected = turnAudit.filter((entry) => entry.outcome === "failed");
+  const recovered = rejected.filter((entry) => succeededTargets.has(actionTarget(entry)));
+  const unresolved = rejected.filter((entry) => !succeededTargets.has(actionTarget(entry)));
+  if (recovered.length) {
+    say(banner(`${recovered.length} earlier attempt${recovered.length === 1 ? " was" : "s were"} rejected; a later attempt with the same target succeeded.`));
+  }
+  if (unresolved.length) {
+    const details = unresolved
+      .map((entry) => `${entry.action}: ${entry.detail || "not completed"}`)
+      .join("; ");
+    say(banner(`Alfresco did not complete ${unresolved.length} operation${unresolved.length === 1 ? "" : "s"}: ${escapeHtml(details)}`));
   }
   if ((data.audit || []).some((entry) => entry.reversible && !entry.undone && entry.outcome === "ok")) {
     offerUndo(data.audit);
   }
+  const succeeded = turnAudit.some((entry) => entry.outcome === "ok");
+  const failed = turnAudit.some((entry) => entry.outcome === "failed");
+  const undoAvailable = (data.audit || []).some(
+    (entry) => entry.reversible && !entry.undone && entry.outcome === "ok",
+  );
+  lastTurnContext = {
+    ...(lastTurnContext || {}),
+    route: lastTurnContext?.route || "explore",
+    outcome: succeeded ? "action_completed" : failed ? "action_blocked" : "investigation",
+    actions: (data.steps || []).map((step) => step.node).slice(0, 8),
+    undo_available: undoAvailable,
+  };
   mood(score.applied ? "found" : "idle", score.applied ? `${score.applied} applied` : "nothing changed");
   bumpScore();
 }
@@ -787,13 +895,46 @@ function renderSuggestions() {
   // Drives the full screen's opening layout, which centres on the greeting
   // until there is a transcript worth reading.
   $("log").classList.toggle("empty", !started);
-  if (started) {
+  rail.dataset.mode = started ? "followup" : "starter";
+  rail.setAttribute("aria-label", started ? "Suggested next steps" : "Suggested questions");
+  if (busy) {
     rail.innerHTML = "";
     return;
   }
-  rail.innerHTML = SUGGESTIONS
+  if (started && !activeSuggestions.length) {
+    rail.innerHTML = suggestionLoading
+      ? `<span class="suggestion-loading" role="status">Finding relevant next steps...</span>`
+      : "";
+    return;
+  }
+  rail.innerHTML = activeSuggestions
     .map((s) => `<button type="button" class="suggestion">${escapeHtml(s)}</button>`)
     .join("");
+}
+
+async function refreshSuggestions() {
+  if (busy) return;
+  const revision = ++suggestionRevision;
+  suggestionLoading = true;
+  renderSuggestions();
+  try {
+    const result = await api("/api/agent/suggestions", {
+      method: "POST",
+      body: JSON.stringify({ context: PAGE || undefined, recent: lastTurnContext || undefined }),
+    });
+    if (revision !== suggestionRevision) return;
+    activeSuggestions = Array.isArray(result.suggestions) && result.suggestions.length
+      ? result.suggestions.slice(0, 4)
+      : SUGGESTIONS;
+  } catch {
+    if (revision !== suggestionRevision) return;
+    activeSuggestions = SUGGESTIONS;
+  } finally {
+    if (revision === suggestionRevision) {
+      suggestionLoading = false;
+      renderSuggestions();
+    }
+  }
 }
 
 /* ---------------------------------------------------------------- history */
@@ -897,6 +1038,7 @@ const QUESTS = [
   { id: "explain", label: "Explain a missing one", prompt: "why can't I find the penetration test report" },
   { id: "capability", label: "See what it can do", prompt: "what can you do to this repository?" },
   { id: "act", label: "Change something", prompt: "create a folder 'Q4 Reports' in Shared" },
+  { id: "folder-rule", label: "Create a folder rule", prompt: "Create a rule on Finance: when a PDF arrives, add the cm:versionable aspect." },
   { id: "undo", label: "Put a change back", prompt: "undo that" },
 ];
 
@@ -946,8 +1088,255 @@ function completeQuest(id) {
 function openRail() { $("rail").classList.add("open"); }
 function closeRail() { $("rail").classList.remove("open"); }
 
+function ledgerSummary(record) {
+  const detail = record.detail || {};
+  if (record.kind === "ask") return `“${escapeHtml(detail.prompt || "")}” <b>→ ${escapeHtml(detail.route || "unknown")}</b>`;
+  if (record.kind === "egress") {
+    const fields = (detail.fields || []).map(escapeHtml).join(", ") || "none listed";
+    return `${escapeHtml(detail.purpose || "model call")} to <code>${escapeHtml(detail.endpoint || "unknown")}</code><div class="ledger-meta">${Number(detail.nodeCount) || 0} node(s) · fields: ${fields}</div>`;
+  }
+  if (record.kind === "decision") {
+    const args = Object.entries(detail.arguments || {}).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(", ");
+    return `<b>${escapeHtml(detail.action || "change")}</b> · ${escapeHtml(detail.outcome || "unknown")} · ${detail.reversible ? "undoable" : "not reversible"}<div class="ledger-meta">${escapeHtml(args || detail.detail || "No arguments recorded")}</div>`;
+  }
+  if (record.kind === "policy_change") {
+    const after = detail.after || {};
+    const hosts = after.allowedModelHosts;
+    const summary = Array.isArray(hosts)
+      ? `hosts: ${hosts.length ? hosts.map(escapeHtml).join(", ") : "unrestricted"} · minimise metadata: ${after.minimiseMetadata ? "on" : "off"}`
+      : "deployment defaults";
+    return `<b>Governance policy</b> · ${escapeHtml(detail.outcome || "requested")}<div class="ledger-meta">${summary}</div>`;
+  }
+  return escapeHtml(record.kind || "event");
+}
+
+function renderLedger(records) {
+  if (!records.length) return `<div class="ledger-empty">No recorded activity for this signed-in user yet. Ask a question to see its route and model egress here.</div>`;
+  return `<div class="ledger-list">${records.slice().reverse().map((record) => `
+    <article class="ledger-row">
+      <div class="ledger-kind">${escapeHtml(record.kind || "event")}</div>
+      <div class="ledger-detail">${ledgerSummary(record)}<div class="ledger-meta">${new Date((record.at || 0) * 1000).toLocaleString()}</div></div>
+    </article>`).join("")}</div>`;
+}
+
+function actionTarget(entry) {
+  const args = entry.arguments || {};
+  if (entry.action === "create_folder") {
+    return `${entry.action}:${args.resolved_parent_id || args.parent_id || ""}:${args.name || ""}`;
+  }
+  if (entry.action === "add_tag") return `${entry.action}:${args.node_id || ""}:${args.tag || ""}`;
+  if (entry.action === "set_properties") {
+    return `${entry.action}:${args.node_id || ""}:${JSON.stringify(args.properties || {})}`;
+  }
+  return `${entry.action}:${JSON.stringify(args)}`;
+}
+
+async function loadGovernance(activeTab = "overview") {
+  const body = $("governanceBody");
+  body.innerHTML = `<p class="governance-loading">Checking controls&hellip;</p>`;
+  try {
+    const [posture, activity, integrity, policy] = await Promise.all([
+      api("/api/governance/posture"),
+      api("/api/governance/ledger?limit=30"),
+      api("/api/governance/verify"),
+      api("/api/governance/settings"),
+    ]);
+    const ledger = posture.ledger || {};
+    const endpoint = posture.modelEndpoint || {};
+    const minimisation = posture.dataMinimisation || {};
+    const repositoryWrites = posture.repositoryWrites || { state: "not-tested", reason: "" };
+    const chainState = integrity.ok ? "ok" : "fail";
+    const controls = policy.canManage ? `
+      <form id="governanceForm" class="policy-form">
+        <section class="policy-section">
+          <h3>AI and data</h3>
+          <div class="control-group">
+            <label for="allowedModelHosts">Approved AI destinations</label>
+            <input id="allowedModelHosts" name="allowedModelHosts" type="text"
+              value="${escapeHtml((policy.allowedModelHosts || []).join(", "))}"
+              placeholder="ollama.internal, llm.example.eu" autocomplete="off" />
+            <p class="policy-help">List exact hostnames, separated by commas. Leave empty to allow any configured model host.</p>
+            <p id="policyWarning" class="policy-warning" hidden></p>
+          </div>
+          <label class="control-toggle">
+            <span><b>Hide document titles and descriptions</b><small>The AI still searches using your Alfresco permissions.</small></span>
+            <input id="minimiseMetadata" type="checkbox" ${policy.minimiseMetadata ? "checked" : ""} />
+          </label>
+          <label class="control-toggle">
+            <span><b>Send diagnostics to LangSmith</b><small>When on, prompts and tool results are sent to that service.</small></span>
+            <input id="traceToThirdParty" type="checkbox" ${policy.traceToThirdParty ? "checked" : ""} />
+          </label>
+        </section>
+        <section class="policy-section">
+          <h3>Repository changes</h3>
+          <label class="control-toggle">
+            <span><b>Allow the AI to propose changes</b><small>Turn off to pause all changes, including approvals that are still pending.</small></span>
+            <input id="allowRepositoryChanges" type="checkbox" ${policy.allowRepositoryChanges ? "checked" : ""} />
+          </label>
+          <label class="control-toggle">
+            <span><b>Allow built-in sharing and access changes</b><small>Controls Curator's named share, permission, group, site, and membership tools. Custom actions may do similar work; disable those too for broader coverage.</small></span>
+            <input id="allowAccessChanges" type="checkbox" ${policy.allowAccessChanges ? "checked" : ""} />
+          </label>
+          <label class="control-toggle">
+            <span><b>Allow custom Alfresco actions</b><small>These repository-defined actions can do more than Curator's named tools.</small></span>
+            <input id="allowRepositoryActions" type="checkbox" ${policy.allowRepositoryActions ? "checked" : ""} />
+          </label>
+          <div class="control-group budget-control">
+            <label for="mutationBudget">Maximum changes the AI may propose per conversation</label>
+            <input id="mutationBudget" type="number" min="1" max="1000" step="1" required value="${Number(policy.mutationBudget) || 25}" />
+            <p class="policy-help">A person must still approve every change. This limit applies to conversations already in progress.</p>
+          </div>
+          <p class="policy-invariant"><b>Approval stays on.</b> Every change must be reviewed and approved individually.</p>
+          <p class="policy-access">Only members of <strong>${escapeHtml((policy.adminGroups || []).join(", ") || "the authorized Alfresco group")}</strong> can change these settings. The access group and audit storage are set by the deployment administrator.</p>
+          <div class="policy-actions">
+            <button class="policy-save" type="submit">Save policy</button>
+            <button class="refresh-governance" id="resetPolicy" type="button">Restore defaults</button>
+          </div>
+          <div id="policyFeedback" class="policy-feedback" role="status"></div>
+        </section>
+      </form>` : `<div class="access-notice">Policy controls are read-only. Contact an Alfresco governance administrator to request a change.</div>`;
+
+    const activityRows = renderLedger(activity.records || []);
+    const auditHealthy = ledger.writable && integrity.ok;
+    body.innerHTML = `<div class="governance-summary">
+      <span class="summary-dot ${auditHealthy ? "ok" : "fail"}"></span>
+      <div><b>${auditHealthy ? "Audit trail is working" : "Audit trail needs attention"}</b><small>Repository activity and policy changes are recorded here.</small></div>
+      <span>${Number(ledger.records) || 0} records</span>
+      </div>
+      <div class="governance-tabs" role="tablist" aria-label="Governance sections">
+        <button class="governance-tab" type="button" role="tab" data-panel="overview" aria-selected="${activeTab === "overview"}">Overview</button>
+        <button class="governance-tab" type="button" role="tab" data-panel="controls" aria-selected="${activeTab === "controls"}">Controls</button>
+        <button class="governance-tab" type="button" role="tab" data-panel="audit" aria-selected="${activeTab === "audit"}">Audit</button>
+      </div>
+      <section class="governance-panel" id="governance-overview" role="tabpanel" ${activeTab === "overview" ? "" : "hidden"}>
+        <div class="setting-row"><div><b>Who can see documents?</b><small>Search runs as the signed-in Alfresco user and follows their permissions.</small></div><span class="setting-state good">Alfresco access</span></div>
+        <div class="setting-row"><div><b>Do document contents leave Alfresco?</b><small>Document bodies are not fetched for model prompts.</small></div><span class="setting-state good">No</span></div>
+        <div class="setting-row"><div><b>Does a person approve each change?</b><small>Approval is always required and cannot be disabled by policy.</small></div><span class="setting-state good">Always</span></div>
+        <div class="setting-row"><div><b>Can Alfresco accept changes?</b><small>${repositoryWrites.reason ? escapeHtml(repositoryWrites.reason) : repositoryWrites.state === "not-tested" ? "No repository-wide read-only response has been seen this session; each change still needs your approval." : ""}</small></div><span class="setting-state ${repositoryWrites.state === "read-only" ? "bad" : "caution"}">${repositoryWrites.state === "read-only" ? "Read-only" : "Not checked"}</span></div>
+        <div class="setting-row"><div><b>Model host</b><small>${escapeHtml(endpoint.provider || "unknown")} · ${escapeHtml(endpoint.host || "not configured")}</small></div><span class="setting-state ${endpoint.currentHostAllowed === false ? "bad" : endpoint.restricted ? "good" : "caution"}">${endpoint.currentHostAllowed === false ? "Blocked" : endpoint.restricted ? "Allowed" : "No restriction"}</span></div>
+        <div class="setting-row"><div><b>Hide document titles and descriptions</b><small>${minimisation.enabled ? "These fields are withheld from model requests." : "These fields may be included when needed for an answer."}</small></div><span class="setting-state ${minimisation.enabled ? "good" : "caution"}">${minimisation.enabled ? "On" : "Off"}</span></div>
+        <div class="setting-row"><div><b>Send diagnostics to LangSmith</b><small>Prompts and tool results are sent when enabled.</small></div><span class="setting-state ${posture.tracingToThirdParty ? "caution" : "good"}">${posture.tracingToThirdParty ? "On" : "Off"}</span></div>
+        <div class="setting-row"><div><b>Changes per conversation</b><small>Maximum changes the agent may propose; every change still needs approval.</small></div><span class="setting-state">${Number(policy.mutationBudget) || 25}</span></div>
+        <div class="setting-row"><div><b>AI-proposed changes</b><small>When paused, no repository change can run.</small></div><span class="setting-state ${policy.allowRepositoryChanges ? "good" : "caution"}">${policy.allowRepositoryChanges ? "Allowed" : "Paused"}</span></div>
+        <div class="setting-row"><div><b>Built-in sharing and access changes</b><small>Custom repository actions may also perform access changes.</small></div><span class="setting-state ${policy.allowAccessChanges ? "good" : "caution"}">${policy.allowAccessChanges ? "Allowed" : "Blocked"}</span></div>
+        <div class="setting-row"><div><b>Custom Alfresco actions</b><small>Repository-defined actions outside Curator's named tools.</small></div><span class="setting-state ${policy.allowRepositoryActions ? "caution" : "good"}">${policy.allowRepositoryActions ? "Allowed" : "Blocked"}</span></div>
+      </section>
+      <section class="governance-panel" id="governance-controls" role="tabpanel" ${activeTab === "controls" ? "" : "hidden"}>
+        ${controls}
+      </section>
+      <section class="governance-panel" id="governance-audit" role="tabpanel" ${activeTab === "audit" ? "" : "hidden"}>
+        <div class="audit-status ${chainState}"><b>${integrity.ok ? "Hash chain verified" : `Integrity failure at record ${integrity.brokenAt}`}</b><span>${integrity.checked} records checked · ${ledger.writable ? "ledger writable" : "ledger not writable"}</span></div>
+        <h3 class="posture-section">Recent activity · this user</h3>
+        ${activityRows}
+        <button class="refresh-governance" id="refreshGovernance" type="button">Refresh audit</button>
+      </section>`;
+
+    body.querySelectorAll(".governance-tab").forEach((tab) => {
+      tab.addEventListener("click", () => loadGovernance(tab.dataset.panel));
+    });
+    const refresh = $("refreshGovernance");
+    if (refresh) refresh.addEventListener("click", () => loadGovernance("audit"));
+    const form = $("governanceForm");
+    if (form) {
+      const updatePolicyWarning = () => {
+        const hosts = $("allowedModelHosts").value.split(",").map((host) => host.trim().toLowerCase()).filter(Boolean);
+        const blocksCurrent = hosts.length > 0 && !hosts.includes((endpoint.host || "").toLowerCase());
+        const warning = $("policyWarning");
+        warning.hidden = !blocksCurrent && hosts.length > 0;
+        warning.textContent = blocksCurrent
+          ? `The active model host (${endpoint.host}) is not listed. Model-backed requests will stop after saving.`
+          : hosts.length === 0
+            ? "No host restriction: any model endpoint configured for this deployment is allowed."
+            : "";
+      };
+      const formValues = () => JSON.stringify({
+        hosts: $("allowedModelHosts").value.split(",").map((host) => host.trim()).filter(Boolean),
+        minimise: $("minimiseMetadata").checked,
+        tracing: $("traceToThirdParty").checked,
+        changes: $("allowRepositoryChanges").checked,
+        access: $("allowAccessChanges").checked,
+        actions: $("allowRepositoryActions").checked,
+        budget: Number($("mutationBudget").value),
+      });
+      const initialValues = formValues();
+      const save = form.querySelector(".policy-save");
+      const feedback = $("policyFeedback");
+      const updateDirty = () => {
+        const dirty = formValues() !== initialValues;
+        save.disabled = !dirty;
+        feedback.textContent = dirty ? "Unsaved changes" : "";
+        feedback.classList.remove("error");
+      };
+      updatePolicyWarning();
+      $("allowedModelHosts").addEventListener("input", updatePolicyWarning);
+      form.addEventListener("input", updateDirty);
+      form.addEventListener("change", updateDirty);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        save.disabled = true;
+        feedback.textContent = "Saving and recording policy change…";
+        try {
+          await api("/api/governance/settings", {
+            method: "PUT",
+            body: JSON.stringify({
+              allowed_model_hosts: $("allowedModelHosts").value.split(",").map((host) => host.trim()).filter(Boolean),
+              minimise_metadata: $("minimiseMetadata").checked,
+              trace_to_third_party: $("traceToThirdParty").checked,
+              mutation_budget: Number($("mutationBudget").value),
+              allow_repository_changes: $("allowRepositoryChanges").checked,
+              allow_access_changes: $("allowAccessChanges").checked,
+              allow_repository_actions: $("allowRepositoryActions").checked,
+            }),
+          });
+          await loadGovernance("controls");
+        } catch (error) {
+          save.disabled = false;
+          feedback.textContent = error.message;
+          feedback.classList.add("error");
+        }
+      });
+      $("resetPolicy").addEventListener("click", async () => {
+        const button = $("resetPolicy");
+        if (!window.confirm("Restore the governance settings from deployment configuration?")) return;
+        button.disabled = true;
+        feedback.classList.remove("error");
+        feedback.textContent = "Resetting and recording policy change…";
+        try {
+          await api("/api/governance/settings", { method: "DELETE" });
+          await loadGovernance("controls");
+        } catch (error) {
+          button.disabled = false;
+          feedback.textContent = error.message;
+          feedback.classList.add("error");
+        }
+      });
+    }
+  } catch (error) {
+    body.innerHTML = `<p class="governance-error">Could not load governance posture: ${escapeHtml(error.message)}</p>
+      <div class="governance-foot"><span></span><button class="refresh-governance" id="refreshGovernance" type="button">Retry</button></div>`;
+    $("refreshGovernance").addEventListener("click", loadGovernance);
+  }
+}
+
+$("governanceBtn").addEventListener("click", () => {
+  closeRail();
+  $("governanceDialog").showModal();
+  loadGovernance();
+});
+$("governanceClose").addEventListener("click", () => $("governanceDialog").close());
+$("governanceDialog").addEventListener("click", (event) => {
+  if (event.target === $("governanceDialog")) $("governanceDialog").close();
+});
+
 $("railBtn").addEventListener("click", () => {
-  $("rail").classList.toggle("open");
+  if (window.matchMedia("(min-width: 720px)").matches) {
+    const collapsed = document.querySelector(".shell").classList.toggle("rail-collapsed");
+    $("railBtn").title = collapsed ? "Show conversations" : "Hide conversations";
+    $("railBtn").setAttribute("aria-label", collapsed ? "Show conversations" : "Hide conversations");
+    $("railBtn").setAttribute("aria-expanded", String(!collapsed));
+  } else {
+    $("rail").classList.toggle("open");
+  }
   renderHistory();
 });
 $("railClose").addEventListener("click", closeRail);
@@ -971,8 +1360,10 @@ $("composer").addEventListener("submit", (event) => {
 });
 
 function send() {
+  if (busy) return;
   const box = $("prompt");
   const value = box.value;
+  if (!value.trim()) return;
   box.value = "";
   grow();
   ask(value);
@@ -1006,7 +1397,10 @@ $("newBtn").addEventListener("click", () => {
   $("log").innerHTML = "";
   $("routeBadge").hidden = true;
   EARNED.clear();
+  lastTurnContext = null;
+  activeSuggestions = SUGGESTIONS;
   greet();
+  void refreshSuggestions();
   renderSuggestions();
   renderHistory();
   closeRail();
@@ -1039,6 +1433,7 @@ async function resumeSession() {
     const state = await api("/api/status", {}, false);
     if (!state.searchingAs) return false;
     SHARE_BASE = state.shareBaseUrl || SHARE_BASE;
+    void refreshSuggestions();
     return true;
   } catch {
     return false;
@@ -1072,6 +1467,7 @@ function signInForm() {
         }),
       }, false);
       SHARE_BASE = state.shareBaseUrl || SHARE_BASE;
+      void refreshSuggestions();
       node.remove();
       greet();
       deepLink();

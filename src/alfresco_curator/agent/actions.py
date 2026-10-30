@@ -22,7 +22,7 @@ from langchain_core.tools import StructuredTool
 from alfresco_curator import governance
 from alfresco_curator.agent.guardrails import MutationBudget
 from alfresco_curator.alfresco.client import AlfrescoClient
-from alfresco_curator.errors import AlfrescoError
+from alfresco_curator.errors import AlfrescoError, explain_alfresco_error, is_repository_read_only
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +103,7 @@ class AuditLog:
 
     entries: list[AuditEntry] = field(default_factory=list)
     budget: MutationBudget = field(default_factory=MutationBudget)
+    write_blocked_reason: str = ""
 
     def record(self, action: str, arguments: dict[str, Any], user: str) -> AuditEntry:
         entry = AuditEntry(action=action, arguments=arguments, user=user, at=time.time())
@@ -161,35 +162,95 @@ def build_action_tools(client: AlfrescoClient, audit: AuditLog) -> list[Structur
     def audited(
         name: str, call, arguments: dict[str, Any], before: dict[str, Any] | None = None
     ) -> dict[str, Any]:
+        entry = audit.record(name, arguments, client.username or "unknown")
+        if audit.write_blocked_reason:
+            entry.outcome, entry.detail = "failed", audit.write_blocked_reason
+            _ledger(entry)
+            return {"ok": False, "error": audit.write_blocked_reason}
+        denied = governance.change_denial(name)
+        if denied:
+            entry.outcome, entry.detail = "failed", denied
+            _ledger(entry)
+            return {"ok": False, "error": denied}
         # Charged before the call, so a refusal costs nothing and the limit
         # cannot be walked past by a tool that fails and retries.
+        audit.budget.limit = governance.effective_policy()["mutation_budget"]
         over = audit.budget.take(name)
         if over:
+            entry.outcome, entry.detail = "failed", over
+            _ledger(entry)
             log.warning("mutation budget exhausted, refusing %s", name)
             return {"ok": False, "error": over}
 
-        entry = audit.record(name, arguments, client.username or "unknown")
         entry.before = before or {}
         try:
             result = call()
         except AlfrescoError as exc:
-            entry.outcome, entry.detail = "failed", str(exc)
+            entry.outcome, entry.detail = "failed", explain_alfresco_error(exc)
+            if is_repository_read_only(exc):
+                audit.write_blocked_reason = entry.detail
             log.info("action %s failed: %s", name, exc)
             _ledger(entry)
             # Returned rather than raised: the agent should report the refusal
             # and carry on with the rest of a batch.
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": entry.detail}
         entry.outcome = "ok"
         entry.detail = result.get("id", "") if isinstance(result, dict) else ""
         entry.created_id = entry.detail
         _ledger(entry)
         return {"ok": True, "result": _thin(result)}
 
-    def create_folder(parent_id: str, name: str, title: str = "") -> dict[str, Any]:
+    def create_folder(
+        parent_id: str, name: str, title: str = "", description: str = ""
+    ) -> dict[str, Any]:
+        arguments = {
+            "parent_id": parent_id,
+            "name": name,
+            "title": title,
+            "description": description,
+        }
+
+        def create() -> dict[str, Any]:
+            try:
+                resolved_parent = client.resolve_node_id(parent_id)
+                try:
+                    parent = client.get_node_details(resolved_parent)
+                except AlfrescoError as exc:
+                    if exc.status_code not in (400, 404):
+                        raise
+                    matches = client.find_folders(parent_id)
+                    if len(matches) > 1:
+                        paths = ", ".join(
+                            match.get("path") or match["id"] for match in matches[:10]
+                        )
+                        raise AlfrescoError(
+                            409,
+                            f"Several accessible folders are named {parent_id!r}: {paths}. "
+                            "Ask which path the user means.",
+                        ) from exc
+                    if not matches:
+                        raise AlfrescoError(
+                            404,
+                            f"No accessible folder named {parent_id!r} was found. "
+                            "Ask the user for its full path.",
+                        ) from exc
+                    resolved_parent = matches[0]["id"]
+                    parent = client.get_node_details(resolved_parent)
+            except AlfrescoError as exc:
+                raise AlfrescoError(
+                    exc.status_code,
+                    f"Parent folder {parent_id!r} could not be resolved as this user: "
+                    f"{exc.message}",
+                ) from exc
+            if parent.get("nodeType") != "cm:folder" and parent.get("isFolder") is not True:
+                raise AlfrescoError(400, f"Parent {parent_id!r} is not a folder.")
+            arguments["resolved_parent_id"] = resolved_parent
+            return client.create_folder(resolved_parent, name, title or None, description or None)
+
         return audited(
             "create_folder",
-            lambda: client.create_folder(parent_id, name, title or None),
-            {"parent_id": parent_id, "name": name, "title": title},
+            create,
+            arguments,
         )
 
     def rename_node(node_id: str, new_name: str) -> dict[str, Any]:
@@ -260,7 +321,13 @@ def build_action_tools(client: AlfrescoClient, audit: AuditLog) -> list[Structur
         return {"ok": True, "children": [_thin(child) for child in children]}
 
     specs = [
-        (create_folder, "create_folder", "Create a folder under a parent node."),
+        (
+            create_folder,
+            "create_folder",
+            "Create a folder with optional title and description under a parent folder node ID. "
+            "Resolve a human folder name "
+            "with find_folders first; do not pass the name as parent_id.",
+        ),
         (rename_node, "rename_node", "Rename one node."),
         (
             set_properties,

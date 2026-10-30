@@ -93,6 +93,35 @@ class AgentRequest(_Model):
     )
 
 
+class SuggestionFile(_Model):
+    name: str = Field(default="", max_length=512)
+    path: str = Field(default="", max_length=2048)
+
+
+class SuggestionContextIn(_Model):
+    prompt: str = Field(default="", max_length=1200)
+    route: Literal["search", "explore", "act", "undo", "clarify"] | None = None
+    outcome: Literal[
+        "found",
+        "query",
+        "permissions",
+        "infrastructure",
+        "action_completed",
+        "action_blocked",
+        "action_rejected",
+        "investigation",
+        "unknown",
+    ] | None = None
+    files: list[SuggestionFile] = Field(default_factory=list, max_length=8)
+    actions: list[str] = Field(default_factory=list, max_length=8)
+    undo_available: bool = False
+
+
+class SuggestionsRequest(_Model):
+    context: PageContextIn | None = None
+    recent: SuggestionContextIn | None = None
+
+
 class Decision(_Model):
     type: Literal["approve", "reject"] = "approve"
     message: str | None = Field(
@@ -240,6 +269,9 @@ class DeepAgentResponse(_Model):
     )
     audit: list[dict[str, Any]] = Field(
         default=[], description="Every change attempted this session, including refusals."
+    )
+    turn_audit: list[dict[str, Any]] = Field(
+        default=[], alias="turnAudit", description="Changes attempted during this turn only."
     )
     changed: int = 0
 

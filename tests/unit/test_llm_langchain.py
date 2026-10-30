@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 
 import pytest
@@ -83,6 +84,23 @@ class TestComplete:
             self._settings(settings)
             chain.return_value = RunnableLambda(lambda _: AIMessage(content="hello"))
             assert llm.complete("system", "user") == "hello"
+
+    def test_model_call_uses_the_current_tracing_policy(self):
+        with (
+            patch("alfresco_curator.llm.client.get_settings") as settings,
+            patch("alfresco_curator.llm.client.resilient_model") as chain,
+            patch(
+                "alfresco_curator.llm.client.effective_policy",
+                return_value={"trace_to_third_party": True},
+            ),
+            patch(
+                "alfresco_curator.llm.client.tracing_context", return_value=nullcontext()
+            ) as trace,
+        ):
+            self._settings(settings)
+            chain.return_value = RunnableLambda(lambda _: AIMessage(content="hello"))
+            assert llm.complete("system", "user") == "hello"
+        trace.assert_called_once_with(enabled=True)
 
     def test_a_failing_model_is_reported_with_what_was_tried(self):
         def explode(_: object) -> AIMessage:

@@ -61,6 +61,9 @@
   <!-- Reports the route the server chose. Not a control: whether a request
        reads or writes is a property of the request, not a setting. -->
   <span id="routeBadge" class="route" hidden></span>
+  <button id="governanceBtn" class="governance-button" type="button" title="View governance posture">
+    <span class="governance-mark" aria-hidden="true">✓</span><span>Governance</span>
+  </button>
   <button id="expandBtn" class="icon-btn" title="Open the full screen" aria-label="Open the full screen">&#x2922;</button>
 </header>
 
@@ -93,6 +96,19 @@
 
 </div><!-- /panel -->
 </div><!-- /shell -->
+
+<dialog id="governanceDialog" class="governance-dialog" aria-labelledby="governanceTitle">
+  <div class="governance-head">
+    <div>
+      <div class="rail-section">Trust center</div>
+      <h2 id="governanceTitle">Governance posture</h2>
+    </div>
+    <button id="governanceClose" class="icon-btn" type="button" aria-label="Close governance">&times;</button>
+  </div>
+  <div id="governanceBody" class="governance-body" aria-live="polite">
+    <p class="governance-loading">Checking controls&hellip;</p>
+  </div>
+</dialog>
 
 <script src="/static/bot.js"></script>
 </body>

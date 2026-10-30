@@ -65,6 +65,7 @@ def test_reads_route_to_search(prompt):
         "I need you to archive the 2024 contracts",
         "clean up the Archive folder",
         "empty the trash",
+        "create a folder rule that tags new PDFs in Finance",
     ],
 )
 def test_instructions_route_to_act(prompt):
@@ -101,6 +102,9 @@ def test_repository_reversals_are_actions_not_session_undo(prompt):
         "is the indexing lagging",
         "who can see the salary review",
         "what permissions are on this folder",
+        "recommend an embedding setup that preserves Alfresco permissions",
+        "does this deployment use vector search",
+        "list the document rules on the Finance folder",
     ],
 )
 def test_open_questions_route_to_the_deep_agent(prompt):

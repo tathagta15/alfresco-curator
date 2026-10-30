@@ -15,6 +15,7 @@ from alfresco_curator.agent.guardrails import (
     guard_result,
     scan,
     ungrounded_numbers,
+    unsupported_absence_claim,
 )
 
 
@@ -45,6 +46,14 @@ class TestGroundedness:
 
     def test_an_empty_report_is_grounded(self):
         assert ungrounded_numbers("", "total: 5") == []
+
+    def test_detects_an_unsupported_nonexistence_claim(self):
+        assert unsupported_absence_claim(
+            "The path probe proves no content exists under this folder."
+        )
+
+    def test_zero_search_results_are_not_an_absence_claim(self):
+        assert not unsupported_absence_claim("The query returned no matching results.")
 
 
 class TestInjectionDetection:

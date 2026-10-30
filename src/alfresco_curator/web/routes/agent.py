@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -13,8 +14,11 @@ from alfresco_curator.agent import SearchAgent
 from alfresco_curator.agent.actions import AuditLog, undo_run
 from alfresco_curator.agent.context import PageContext, Selected, apply, unresolved
 from alfresco_curator.agent.deep import build_deep_agent, resume_deep_agent, run_deep_agent
-from alfresco_curator.agent.intent import classify
-from alfresco_curator.errors import SessionExpiredError
+from alfresco_curator.agent.intent import QUESTION_WORDS, READ_VERBS, Intent, classify
+from alfresco_curator.agent.suggestions import get_index
+from alfresco_curator.config import get_settings
+from alfresco_curator.errors import AlfrescoError, SessionExpiredError
+from alfresco_curator.governance.policy import effective_policy
 from alfresco_curator.web.dependencies import CurrentSession, Searcher, TelemetryDep
 from alfresco_curator.web.schemas import (
     AgentRequest,
@@ -22,11 +26,148 @@ from alfresco_curator.web.schemas import (
     AskResponse,
     DeepAgentResponse,
     ResumeRequest,
+    SuggestionsRequest,
     UndoResponse,
 )
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+
+@router.post("/suggestions")
+def suggestions(body: SuggestionsRequest, client: Searcher) -> dict:
+    """Rank natural-language opener chips over documents visible to this user."""
+    settings = get_settings().semantic
+    if not settings.enabled:
+        return {"suggestions": []}
+
+    context = body.context
+    documents: list[dict] = []
+    verified_selected_names: list[str] = []
+    if context and context.folder_id:
+        try:
+            entries = client.list_children(context.folder_id, max_items=settings.max_documents)
+        except AlfrescoError:
+            entries = []
+    else:
+        result = client.search_afts(
+            'TYPE:"cm:content"',
+            max_items=settings.max_documents,
+            includes=["path"],
+            fields=["id", "name", "nodeType"],
+            language=client.detect_query_language(),
+        )
+        entries = [item.get("entry", {}) for item in result.get("list", {}).get("entries", [])]
+
+    for entry in entries:
+        if entry.get("nodeType") == "cm:content" or entry.get("isFile") is True:
+            documents.append(
+                {
+                    "id": entry.get("id", ""),
+                    "name": entry.get("name", ""),
+                    "path": (entry.get("path") or {}).get("name", ""),
+                }
+            )
+
+    if context:
+        known_ids = {item["id"] for item in documents}
+        for selected in context.selected:
+            if not selected.id or selected.id in known_ids:
+                continue
+            try:
+                entry = client.get_node_details(selected.id)
+            except AlfrescoError:
+                continue
+            documents.append(
+                {
+                    "id": entry.get("id", selected.id),
+                    "name": entry.get("name", ""),
+                    "path": (entry.get("path") or {}).get("name", ""),
+                }
+            )
+            if entry.get("name"):
+                verified_selected_names.append(entry["name"])
+
+    try:
+        index = get_index(
+            settings.model_name,
+            settings.model_cache_dir,
+            settings.index_path,
+            settings.max_documents,
+        )
+        ranked_suggestions = index.suggestions(
+            client.username or "",
+            documents,
+            folder_name=context.folder_name if context else "",
+            folder_path=context.folder_path if context else "",
+            recent_prompt=body.recent.prompt if body.recent else "",
+            recent_outcome=body.recent.outcome if body.recent else "",
+            recent_files=[item.model_dump() for item in body.recent.files] if body.recent else [],
+            recent_actions=body.recent.actions if body.recent else [],
+            undo_available=body.recent.undo_available if body.recent else False,
+            selected_names=verified_selected_names,
+        )
+    except Exception as exc:
+        log.warning("local suggestion embeddings unavailable: %s", exc)
+        ranked_suggestions = []
+    return {"suggestions": ranked_suggestions}
+
+
+_ACTION_CONFIRMATION = re.compile(
+    r"^(?:yes|yeah|yep|sure|okay|ok|please do|go ahead|apply that|apply it|"
+    r"use that|use it|do that|do it)\b"
+)
+_ACTION_REFERENCE = re.compile(
+    r"\b(?:that|it|one|those|these|above|suggested|option|description|tag|"
+    r"title|property|properties|folder)\b"
+)
+_CLARIFICATION_CUE = re.compile(
+    r"\?|\b(?:which|what|provide|specify|choose|would you like|what .* need)\b",
+    re.IGNORECASE,
+)
+_WORDS = re.compile(r"[a-z][a-z'\-]*", re.IGNORECASE)
+
+
+def _intent_for_thread(prompt: str, session, thread_id: str) -> Intent:
+    intent = classify(prompt)
+    if thread_id not in session.pending_action_threads:
+        return intent
+    if intent.route == "undo":
+        session.pending_action_threads.discard(thread_id)
+        return intent
+
+    text = (prompt or "").strip().lower()
+    words = _WORDS.findall(text)
+    affirmation = bool(_ACTION_CONFIRMATION.search(text))
+    contextual = bool(_ACTION_REFERENCE.search(text))
+    independent_read = bool(READ_VERBS.intersection(words))
+    new_question = bool(words and words[0] in QUESTION_WORDS and not contextual)
+
+    if intent.route == "search" and independent_read and not affirmation:
+        session.pending_action_threads.discard(thread_id)
+        return intent
+    if intent.route == "explore" and new_question:
+        session.pending_action_threads.discard(thread_id)
+        return intent
+    if affirmation or contextual or (words and len(words) <= 8 and not new_question):
+        return Intent(
+            "act",
+            "continues the pending repository action",
+            writes=True,
+        )
+
+    session.pending_action_threads.discard(thread_id)
+    return intent
+
+
+def _remember_action_question(session, thread_id: str, response: DeepAgentResponse) -> None:
+    if response.pending:
+        session.pending_action_threads.discard(thread_id)
+        return
+    if response.report and _CLARIFICATION_CUE.search(response.report):
+        session.pending_action_threads.add(thread_id)
+    else:
+        session.pending_action_threads.discard(thread_id)
 
 
 @router.post("/ask", response_model=AskResponse)
@@ -44,7 +185,7 @@ def ask(
     therefore reproducible, and the decision is returned so the UI can show
     what was chosen rather than hide it.
     """
-    intent = classify(body.prompt)
+    intent = _intent_for_thread(body.prompt, session, body.thread_id)
 
     # Deixis is resolved before routing acts on it. An instruction that points
     # at the screen with nothing on it must stop here: the alternatives are to
@@ -65,7 +206,6 @@ def ask(
         )
 
     grounded = body.model_copy(update={"prompt": apply(body.prompt, page)})
-
     if intent.route == "undo":
         return AskResponse(
             route=intent.route, reason=intent.reason, undo=undo_changes(session, client)
@@ -112,7 +252,7 @@ def ask_stream(
     its own path, so there is no stage list to promise in advance; it sends
     its route and then its result.
     """
-    intent = classify(body.prompt)
+    intent = _intent_for_thread(body.prompt, session, body.thread_id)
     page = _page_context(body.context)
     blocked = unresolved(body.prompt, page, writes=intent.writes)
     grounded = body.model_copy(update={"prompt": apply(body.prompt, page)})
@@ -231,6 +371,13 @@ def run_deep(
     Answers here are not reproducible the way `/api/agent` is, so this is a
     deliberate second endpoint rather than a flag on the first.
     """
+    policy = effective_policy()
+    allow_writes = body.allow_writes and policy["allow_repository_changes"]
+    policy_signature = (
+        allow_writes,
+        policy["allow_access_changes"],
+        policy["allow_repository_actions"],
+    )
     # The agent is rebuilt when the write setting changes, because the tool set
     # and the approval gate are fixed at compile time - and when the repository
     # client changes, because the tools close over it. Re-authenticating leaves
@@ -238,7 +385,8 @@ def run_deep(
     # "the client has been closed" after the approval has already been given.
     if (
         session.deep_agent is None
-        or session.deep_writes != body.allow_writes
+        or session.deep_writes != allow_writes
+        or session.deep_policy_signature != policy_signature
         or session.deep_client is not client
     ):
         # The ledger belongs to the session, not to the agent. Routing now sets
@@ -254,17 +402,22 @@ def run_deep(
             client,
             telemetry,
             audit=session.audit,
-            allow_writes=body.allow_writes,
+            allow_writes=allow_writes,
             use_backup_model=session.deep_backup,
         )
-        session.deep_writes = body.allow_writes
+        session.deep_writes = allow_writes
+        session.deep_policy_signature = policy_signature
         session.deep_client = client
 
     def run(agent):
         return run_deep_agent(agent, body.prompt, thread_id=body.thread_id)
 
+    audit_start = len(session.audit.entries) if session.audit else 0
     try:
-        return _deep_result(lambda: run(session.deep_agent), session)
+        result = _deep_result(lambda: run(session.deep_agent), session)
+        if allow_writes:
+            _remember_action_question(session, body.thread_id, result)
+        return _with_turn_audit(result, session, audit_start)
     except HTTPException as exc:
         # A daily quota blocks every model on one gateway, so the only useful
         # retry is the backup provider.
@@ -275,11 +428,14 @@ def run_deep(
             client,
             telemetry,
             audit=session.audit,
-            allow_writes=body.allow_writes,
+            allow_writes=allow_writes,
             use_backup_model=True,
         )
         session.deep_backup = True
-        return _deep_result(lambda: run(session.deep_agent), session)
+        result = _deep_result(lambda: run(session.deep_agent), session)
+        if allow_writes:
+            _remember_action_question(session, body.thread_id, result)
+        return _with_turn_audit(result, session, audit_start)
 
 
 @router.post("/deep/resume", response_model=DeepAgentResponse)
@@ -290,13 +446,26 @@ def resume_deep(body: ResumeRequest, session: CurrentSession) -> DeepAgentRespon
             status_code=status.HTTP_409_CONFLICT, detail="no run is waiting for approval"
         )
     decisions = [decision.model_dump(exclude_none=True) for decision in body.decisions]
-    return _deep_result(
+    audit_start = len(session.audit.entries) if session.audit else 0
+    result = _deep_result(
         lambda: resume_deep_agent(session.deep_agent, decisions, thread_id=body.thread_id),
         session,
     )
+    _remember_action_question(session, body.thread_id, result)
+    return _with_turn_audit(result, session, audit_start)
+
+
+def _with_turn_audit(result: DeepAgentResponse, session, start: int) -> DeepAgentResponse:
+    entries = session.audit.entries[start:] if session.audit else []
+    return result.model_copy(update={"turn_audit": [entry.as_dict() for entry in entries]})
 
 
 def _deep_result(call, session) -> DeepAgentResponse:
+    settings = get_settings()
+    provider = settings.llm.provider
+    if session.deep_backup and settings.llm.backup_provider:
+        provider = settings.llm.backup_provider
+    governance.assert_endpoint_allowed(provider, settings)
     try:
         result = call()
     except SessionExpiredError:

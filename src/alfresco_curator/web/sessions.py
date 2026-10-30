@@ -35,11 +35,13 @@ class Session:
     # sessions never ask for the exploratory mode.
     deep_agent: Any | None = None
     deep_writes: bool = False
+    deep_policy_signature: tuple[bool, bool, bool] | None = None
     deep_backup: bool = False
     # The client the deep agent's tools closed over, so a reconnect can be
     # detected: the tools would otherwise keep using a closed one.
     deep_client: AlfrescoClient | None = None
     audit: Any | None = None
+    pending_action_threads: set[str] = field(default_factory=set)
 
     def close(self) -> None:
         for client in self.clients.values():
@@ -48,8 +50,10 @@ class Session:
         self.agent = None
         self.deep_agent = None
         self.deep_backup = False
+        self.deep_policy_signature = None
         self.deep_client = None
         self.audit = None
+        self.pending_action_threads.clear()
 
 
 class SessionStore:

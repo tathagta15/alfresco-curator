@@ -123,6 +123,30 @@ _NOT_A_CLAIM = (
     re.compile(r"\b[\w-]*\d[\w-]*\.(?:pdf|docx?|xlsx?|csv|txt|md|json|ftl|js|xml)\b", re.I),
 )
 
+_UNSUPPORTED_ABSENCE = (
+    re.compile(
+        r"\b(?:no|zero)\s+(?:documents?|files?|content|items?)\s+"
+        r"(?:exist|exists|are present|is present|is stored)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:document|file|folder|directory)\b.{0,80}"
+        r"\b(?:does not|doesn't)\s+exist\b",
+        re.I,
+    ),
+    re.compile(r"\b(?:folder|directory|path)\b.{0,80}\b(?:is|appears|seems)\s+empty\b", re.I),
+    re.compile(
+        r"\bprove[sd]?\s+(?:that\s+)?(?:no|nothing)\b.{0,60}"
+        r"\b(?:exist|exists|present|empty)\b",
+        re.I,
+    ),
+)
+
+
+def unsupported_absence_claim(report: str) -> bool:
+    """Whether a zero-hit report overstates search evidence as non-existence."""
+    return any(pattern.search(report or "") for pattern in _UNSUPPORTED_ABSENCE)
+
 
 def ungrounded_numbers(report: str, evidence: str) -> list[str]:
     """Figures in a report that no tool result supports.

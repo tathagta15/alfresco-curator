@@ -156,7 +156,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: alfresco
       SPRING_ELASTICSEARCH_REST_URIS: http://elasticsearch:9200
       ALFRESCO_ACCEPTEDCONTENTMEDIATYPESCACHE_BASEURL: http://transform-core-aio:8090/transform/config
-      ALFRESCO_ACS_URL: http://alfresco:8080
+      ALFRESCO_ACS_URL: http://localhost:8080
       ALFRESCO_CONTENT_TRANSFORM_SHAREDSECRET: secret
       ALFRESCO_REINDEX_CONTINUOUS_POLLINGINTERVAL: 15s
       ALFRESCO_REINDEX_CONTINUOUS_CATCHUPPOLLINGINTERVAL: 1s
@@ -247,12 +247,19 @@ services:
       INDEXER_URL: http://batch-indexing:8080
       ACTIVEMQ_URL: http://activemq:8161
       # Browser-facing addresses: these must resolve from the user's machine.
+      SEMANTIC_ENABLED: ${SEMANTIC_ENABLED:-true}
+      SEMANTIC_MODEL_NAME: ${SEMANTIC_MODEL_NAME:-BAAI/bge-small-en-v1.5}
+      SEMANTIC_MODEL_CACHE_DIR: /app/data/embedding-models
+      SEMANTIC_INDEX_PATH: /app/data/semantic-suggestions.sqlite3
+      SEMANTIC_MAX_DOCUMENTS: ${SEMANTIC_MAX_DOCUMENTS:-100}
       CURATOR_SHARE_BASE_URL: ${SHARE_PUBLIC_URL:-http://localhost:8180/share}
       CURATOR_FRAME_ANCESTORS: >-
-        'self',${SHARE_PUBLIC_ORIGIN:-http://localhost:8180},${ADW_PUBLIC_ORIGIN:-http://localhost:8280}
+        'self',http://localhost:8080,${SHARE_PUBLIC_ORIGIN:-http://localhost:8180},${ADW_PUBLIC_ORIGIN:-http://localhost:8280}
       # On a volume, because an audit trail that dies with the container is
       # not an audit trail.
       GOVERNANCE_LEDGER_PATH: /app/data/governance-ledger.jsonl
+      GOVERNANCE_POLICY_PATH: /app/data/governance-policy.json
+      GOVERNANCE_ADMIN_GROUPS: ${GOVERNANCE_ADMIN_GROUPS:-GROUP_ALFRESCO_ADMINISTRATORS}
     volumes:
       - curator-governance:/app/data
     ports:
@@ -280,7 +287,7 @@ services:
       APP_CONFIG_BPM_HOST: ""
       # Consumed by the nginx template, not by ADW itself.
       CURATOR_URL: ${CURATOR_PUBLIC_URL:-http://localhost:8600}
-      REPO_URL: http://alfresco:8080
+      REPO_URL: http://localhost:8080
     volumes:
       - ./adw/default.conf.template:/etc/nginx/templates/default.conf.template:ro
     ports:

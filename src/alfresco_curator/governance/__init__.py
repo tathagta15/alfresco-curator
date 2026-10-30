@@ -21,9 +21,14 @@ from alfresco_curator.governance.policy import (
     SENSITIVE_FIELDS,
     PolicyError,
     assert_endpoint_allowed,
+    change_denial,
+    effective_policy,
     endpoint_for,
     host_of,
     minimise,
+    normalise_hosts,
+    reset_policy_override,
+    write_policy_override,
 )
 
 __all__ = [
@@ -32,13 +37,19 @@ __all__ = [
     "Ledger",
     "PolicyError",
     "assert_endpoint_allowed",
+    "change_denial",
+    "effective_policy",
     "endpoint_for",
     "get_ledger",
     "host_of",
     "minimise",
+    "normalise_hosts",
     "record_ask",
     "record_decision",
     "record_egress",
+    "record_policy_change",
+    "reset_policy_override",
+    "write_policy_override",
 ]
 
 
@@ -109,4 +120,19 @@ def record_decision(
             "detail": detail,
         },
         session,
+    )
+
+
+def record_policy_change(
+    actor: str,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    outcome: str,
+) -> None:
+    """Record the requested policy transition before it is persisted."""
+    get_ledger().append(
+        "policy_change",
+        actor,
+        {"before": before, "after": after, "outcome": outcome},
+        strict=True,
     )
