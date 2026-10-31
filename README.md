@@ -156,14 +156,15 @@ nothing and a failing tool cannot walk past the limit by retrying.
 
 #### Explore the approval flow
 
-![Static preview of Curator's governed approval flow](docs/diagrams/curator-approval-flow.visual-check.1440x900.light.png)
+[![Open the interactive Curator approval flow](docs/diagrams/curator-approval-flow.visual-check.1440x900.light.png)](https://tathagta15.github.io/alfresco-curator/)
 
-GitHub shows this static preview; it does not run the interactive viewer inside
-the README. After cloning, open the [interactive diagram](docs/diagrams/curator-approval-flow.html)
-in a browser to use guided chapters for **Prepare proposal**, **Approval +
-policy**, and **Execute + audit**, switch themes, pan/zoom, or play the optional
-trace animation. Its [sequence source](docs/diagrams/curator-approval-flow.sequence.json)
-is kept beside the generated viewer. From the repository root in PowerShell:
+GitHub shows this static preview; clicking it opens the hosted interactive
+viewer. Use the guided chapters for **Prepare proposal**, **Approval + policy**,
+and **Execute + audit**, switch themes, pan/zoom, or play the optional trace
+animation. Its [sequence source](docs/diagrams/curator-approval-flow.sequence.json)
+is kept beside the generated viewer. The first deployment requires GitHub Pages
+to use **GitHub Actions** as its source. For local preview after cloning, run
+from the repository root in PowerShell:
 
 ```powershell
 Start-Process docs/diagrams/curator-approval-flow.html

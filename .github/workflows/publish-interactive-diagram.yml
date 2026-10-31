@@ -1,0 +1,37 @@
+name: Publish interactive diagram
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-interactive-diagram.yml"
+      - "docs/diagrams/curator-approval-flow.html"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: Prepare site
+        run: |
+          mkdir -p site
+          cp docs/diagrams/curator-approval-flow.html site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
