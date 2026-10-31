@@ -42,6 +42,24 @@ ACCESS_CHANGE_ACTIONS = frozenset(
         "add_site_member",
     }
 )
+CONTENT_CHANGE_ACTIONS = frozenset(
+    {
+        "create_folder",
+        "rename_node",
+        "set_properties",
+        "add_aspects",
+        "add_tag",
+        "move_node",
+        "copy_node",
+        "delete_node",
+        "revert_version",
+        "lock_node",
+        "unlock_node",
+        "restore_deleted_node",
+        "add_comment",
+        "add_favorite",
+    }
+)
 
 
 class PolicyError(CuratorError):
@@ -113,7 +131,9 @@ def _read_override(settings: Settings | None = None) -> dict[str, Any]:
         override["mutation_budget"] = value
     for key in (
         "allow_repository_changes",
+        "allow_content_changes",
         "allow_access_changes",
+        "allow_folder_rules",
         "allow_repository_actions",
     ):
         if key in data:
@@ -141,8 +161,19 @@ def effective_policy(settings: Settings | None = None) -> dict[str, Any]:
         "allow_repository_changes": override.get(
             "allow_repository_changes", config.governance.allow_repository_changes
         ),
+        "allow_content_changes": override.get(
+            "allow_content_changes", config.governance.allow_content_changes
+        ),
         "allow_access_changes": override.get(
             "allow_access_changes", config.governance.allow_access_changes
+        ),
+        "allow_folder_rules": override.get(
+            "allow_folder_rules",
+            override.get(
+                "allow_repository_actions",
+                config.governance.allow_folder_rules
+                and config.governance.allow_repository_actions,
+            ),
         ),
         "allow_repository_actions": override.get(
             "allow_repository_actions", config.governance.allow_repository_actions
@@ -156,11 +187,13 @@ def change_denial(action: str) -> str:
     policy = effective_policy()
     if not policy.get("allow_repository_changes", True):
         return "Repository changes are paused by governance policy."
+    if action in CONTENT_CHANGE_ACTIONS and not policy.get("allow_content_changes", True):
+        return "Document and folder changes are disabled by governance policy."
     if action in ACCESS_CHANGE_ACTIONS and not policy.get("allow_access_changes", True):
         return "Sharing and access changes are disabled by governance policy."
-    if action in {"run_action", "create_folder_rule"} and not policy.get(
-        "allow_repository_actions", True
-    ):
+    if action == "create_folder_rule" and not policy.get("allow_folder_rules", True):
+        return "Alfresco folder-rule changes are disabled by governance policy."
+    if action == "run_action" and not policy.get("allow_repository_actions", True):
         return "Alfresco repository actions are disabled by governance policy."
     return ""
 
@@ -173,7 +206,9 @@ def write_policy_override(
     trace_to_third_party: bool | None = None,
     mutation_budget: int | None = None,
     allow_repository_changes: bool | None = None,
+    allow_content_changes: bool | None = None,
     allow_access_changes: bool | None = None,
+    allow_folder_rules: bool | None = None,
     allow_repository_actions: bool | None = None,
 ) -> None:
     path = _policy_path(settings)
@@ -200,10 +235,20 @@ def write_policy_override(
             if allow_repository_changes is None
             else bool(allow_repository_changes)
         ),
+        "allow_content_changes": (
+            effective_policy(settings)["allow_content_changes"]
+            if allow_content_changes is None
+            else bool(allow_content_changes)
+        ),
         "allow_access_changes": (
             effective_policy(settings)["allow_access_changes"]
             if allow_access_changes is None
             else bool(allow_access_changes)
+        ),
+        "allow_folder_rules": (
+            effective_policy(settings)["allow_folder_rules"]
+            if allow_folder_rules is None
+            else bool(allow_folder_rules)
         ),
         "allow_repository_actions": (
             effective_policy(settings)["allow_repository_actions"]

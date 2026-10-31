@@ -25,7 +25,9 @@ class PolicyUpdate(BaseModel):
     trace_to_third_party: bool | None = None
     mutation_budget: int | None = Field(default=None, ge=1, le=1000)
     allow_repository_changes: bool | None = None
+    allow_content_changes: bool | None = None
     allow_access_changes: bool | None = None
+    allow_folder_rules: bool | None = None
     allow_repository_actions: bool | None = None
 
     @field_validator("allowed_model_hosts")
@@ -67,7 +69,9 @@ def _policy_snapshot(settings=None) -> dict[str, Any]:
         "traceToThirdParty": effective["trace_to_third_party"],
         "mutationBudget": effective["mutation_budget"],
         "allowRepositoryChanges": effective["allow_repository_changes"],
+        "allowContentChanges": effective["allow_content_changes"],
         "allowAccessChanges": effective["allow_access_changes"],
+        "allowFolderRules": effective["allow_folder_rules"],
         "allowRepositoryActions": effective["allow_repository_actions"],
         "overridden": effective["overridden"],
     }
@@ -139,6 +143,12 @@ def update_settings(body: PolicyUpdate, session: CurrentSession) -> dict:
         )
 
     before = _policy_snapshot()
+    allow_folder_rules = before["allowFolderRules"]
+    if body.allow_folder_rules is not None:
+        allow_folder_rules = body.allow_folder_rules
+    elif body.allow_repository_actions is False:
+        allow_folder_rules = False
+
     after = {
         "allowedModelHosts": body.allowed_model_hosts,
         "minimiseMetadata": body.minimise_metadata,
@@ -155,11 +165,17 @@ def update_settings(body: PolicyUpdate, session: CurrentSession) -> dict:
             if body.allow_repository_changes is None
             else body.allow_repository_changes
         ),
+        "allowContentChanges": (
+            before["allowContentChanges"]
+            if body.allow_content_changes is None
+            else body.allow_content_changes
+        ),
         "allowAccessChanges": (
             before["allowAccessChanges"]
             if body.allow_access_changes is None
             else body.allow_access_changes
         ),
+        "allowFolderRules": allow_folder_rules,
         "allowRepositoryActions": (
             before["allowRepositoryActions"]
             if body.allow_repository_actions is None
@@ -174,7 +190,9 @@ def update_settings(body: PolicyUpdate, session: CurrentSession) -> dict:
         trace_to_third_party=after["traceToThirdParty"],
         mutation_budget=after["mutationBudget"],
         allow_repository_changes=after["allowRepositoryChanges"],
+        allow_content_changes=after["allowContentChanges"],
         allow_access_changes=after["allowAccessChanges"],
+        allow_folder_rules=after["allowFolderRules"],
         allow_repository_actions=after["allowRepositoryActions"],
     )
     governance.record_policy_change(actor, before, after, "applied")

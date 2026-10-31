@@ -203,7 +203,9 @@ class GovernanceSettings(BaseSettings):
     minimise_metadata: bool = False
     mutation_budget: int = Field(default=25, ge=1, le=1000)
     allow_repository_changes: bool = True
+    allow_content_changes: bool = True
     allow_access_changes: bool = True
+    allow_folder_rules: bool = True
     allow_repository_actions: bool = True
 
     @field_validator("allowed_model_hosts", mode="before")

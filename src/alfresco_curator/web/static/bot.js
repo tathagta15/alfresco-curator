@@ -1131,7 +1131,7 @@ function actionTarget(entry) {
   return `${entry.action}:${JSON.stringify(args)}`;
 }
 
-async function loadGovernance(activeTab = "overview") {
+async function loadGovernance(activeTab = "overview", feedbackMessage = "") {
   const body = $("governanceBody");
   body.innerHTML = `<p class="governance-loading">Checking controls&hellip;</p>`;
   try {
@@ -1146,53 +1146,64 @@ async function loadGovernance(activeTab = "overview") {
     const minimisation = posture.dataMinimisation || {};
     const repositoryWrites = posture.repositoryWrites || { state: "not-tested", reason: "" };
     const chainState = integrity.ok ? "ok" : "fail";
+    const policySource = policy.overridden
+      ? `<div class="policy-source override" role="status"><span>Override</span><div><b>Governance override active</b><small>These values supersede deployment defaults and are recorded in the audit trail.</small></div></div>`
+      : `<div class="policy-source defaults" role="status"><span>Defaults</span><div><b>Using deployment defaults</b><small>Saving a change creates a persistent override. Reset removes it and reapplies deployment settings.</small></div></div>`;
     const controls = policy.canManage ? `
       <form id="governanceForm" class="policy-form">
         <section class="policy-section">
-          <h3>AI and data</h3>
+          <h3>AI destinations and data protection</h3>
           <div class="control-group">
-            <label for="allowedModelHosts">Approved AI destinations</label>
+            <label for="allowedModelHosts">Allowed model hosts</label>
             <input id="allowedModelHosts" name="allowedModelHosts" type="text"
               value="${escapeHtml((policy.allowedModelHosts || []).join(", "))}"
-              placeholder="ollama.internal, llm.example.eu" autocomplete="off" />
-            <p class="policy-help">List exact hostnames, separated by commas. Leave empty to allow any configured model host.</p>
+              placeholder="ollama.internal, llm.example.eu" autocomplete="off" spellcheck="false" autocapitalize="off" />
+            <p class="policy-help">Enter exact hostnames or IP addresses, separated by commas. URLs and wildcards are not accepted. Leave empty to allow any configured model host.</p>
             <p id="policyWarning" class="policy-warning" hidden></p>
           </div>
           <label class="control-toggle">
-            <span><b>Hide document titles and descriptions</b><small>The AI still searches using your Alfresco permissions.</small></span>
+            <span><b>Withhold document titles and descriptions</b><small>These free-text fields stay out of model requests; names and paths remain so results can be identified. Search still follows Alfresco permissions.</small></span>
             <input id="minimiseMetadata" type="checkbox" ${policy.minimiseMetadata ? "checked" : ""} />
           </label>
           <label class="control-toggle">
-            <span><b>Send diagnostics to LangSmith</b><small>When on, prompts and tool results are sent to that service.</small></span>
+            <span><b>Send prompts and tool results to LangSmith</b><small>Enable only when this third-party processing route is approved for your deployment.</small></span>
             <input id="traceToThirdParty" type="checkbox" ${policy.traceToThirdParty ? "checked" : ""} />
           </label>
         </section>
         <section class="policy-section">
-          <h3>Repository changes</h3>
+          <h3>Repository change safeguards</h3>
           <label class="control-toggle">
-            <span><b>Allow the AI to propose changes</b><small>Turn off to pause all changes, including approvals that are still pending.</small></span>
+            <span><b>Allow approved changes to run</b><small>When off, repository writes are blocked even after a user approves a proposal.</small></span>
             <input id="allowRepositoryChanges" type="checkbox" ${policy.allowRepositoryChanges ? "checked" : ""} />
           </label>
           <label class="control-toggle">
-            <span><b>Allow built-in sharing and access changes</b><small>Controls Curator's named share, permission, group, site, and membership tools. Custom actions may do similar work; disable those too for broader coverage.</small></span>
+            <span><b>Allow document and folder operations</b><small>Controls create, rename, move, copy, delete, restore, version revert, metadata, tags, aspects, locks, comments, and favorites.</small></span>
+            <input id="allowContentChanges" type="checkbox" ${policy.allowContentChanges ? "checked" : ""} />
+          </label>
+          <label class="control-toggle">
+            <span><b>Allow sharing and access changes</b><small>Applies to Curator's built-in sharing, permission, group, site, and membership tools. Custom actions are controlled separately.</small></span>
             <input id="allowAccessChanges" type="checkbox" ${policy.allowAccessChanges ? "checked" : ""} />
           </label>
           <label class="control-toggle">
-            <span><b>Allow custom Alfresco actions</b><small>These repository-defined actions can do more than Curator's named tools.</small></span>
+            <span><b>Allow Alfresco folder rules</b><small>Controls creating folder automation that runs on future content. Every rule still requires individual approval.</small></span>
+            <input id="allowFolderRules" type="checkbox" ${policy.allowFolderRules ? "checked" : ""} />
+          </label>
+          <label class="control-toggle">
+            <span><b>Allow custom repository actions</b><small>Repository-defined actions may perform operations outside Curator's built-in controls.</small></span>
             <input id="allowRepositoryActions" type="checkbox" ${policy.allowRepositoryActions ? "checked" : ""} />
           </label>
           <div class="control-group budget-control">
-            <label for="mutationBudget">Maximum changes the AI may propose per conversation</label>
+            <label for="mutationBudget">Maximum changes per conversation</label>
             <input id="mutationBudget" type="number" min="1" max="1000" step="1" required value="${Number(policy.mutationBudget) || 25}" />
-            <p class="policy-help">A person must still approve every change. This limit applies to conversations already in progress.</p>
+            <p class="policy-help">Limits how many changes Curator can attempt in one conversation. Every change still requires individual human approval.</p>
           </div>
-          <p class="policy-invariant"><b>Approval stays on.</b> Every change must be reviewed and approved individually.</p>
+          <p class="policy-invariant"><b>Approval is always required.</b> This policy cannot disable individual human review.</p>
           <p class="policy-access">Only members of <strong>${escapeHtml((policy.adminGroups || []).join(", ") || "the authorized Alfresco group")}</strong> can change these settings. The access group and audit storage are set by the deployment administrator.</p>
           <div class="policy-actions">
             <button class="policy-save" type="submit">Save policy</button>
-            <button class="refresh-governance" id="resetPolicy" type="button">Restore defaults</button>
+            <button class="refresh-governance" id="resetPolicy" type="button" ${policy.overridden ? "" : "disabled"}>Use deployment defaults</button>
+            <div id="policyFeedback" class="policy-feedback" role="status" aria-live="polite">${escapeHtml(feedbackMessage)}</div>
           </div>
-          <div id="policyFeedback" class="policy-feedback" role="status"></div>
         </section>
       </form>` : `<div class="access-notice">Policy controls are read-only. Contact an Alfresco governance administrator to request a change.</div>`;
 
@@ -1218,10 +1229,13 @@ async function loadGovernance(activeTab = "overview") {
         <div class="setting-row"><div><b>Send diagnostics to LangSmith</b><small>Prompts and tool results are sent when enabled.</small></div><span class="setting-state ${posture.tracingToThirdParty ? "caution" : "good"}">${posture.tracingToThirdParty ? "On" : "Off"}</span></div>
         <div class="setting-row"><div><b>Changes per conversation</b><small>Maximum changes the agent may propose; every change still needs approval.</small></div><span class="setting-state">${Number(policy.mutationBudget) || 25}</span></div>
         <div class="setting-row"><div><b>AI-proposed changes</b><small>When paused, no repository change can run.</small></div><span class="setting-state ${policy.allowRepositoryChanges ? "good" : "caution"}">${policy.allowRepositoryChanges ? "Allowed" : "Paused"}</span></div>
+        <div class="setting-row"><div><b>Document and folder operations</b><small>Content edits, structure, versions, locks, comments, and favorites.</small></div><span class="setting-state ${policy.allowContentChanges ? "good" : "caution"}">${policy.allowContentChanges ? "Allowed" : "Blocked"}</span></div>
         <div class="setting-row"><div><b>Built-in sharing and access changes</b><small>Custom repository actions may also perform access changes.</small></div><span class="setting-state ${policy.allowAccessChanges ? "good" : "caution"}">${policy.allowAccessChanges ? "Allowed" : "Blocked"}</span></div>
-        <div class="setting-row"><div><b>Custom Alfresco actions</b><small>Repository-defined actions outside Curator's named tools.</small></div><span class="setting-state ${policy.allowRepositoryActions ? "caution" : "good"}">${policy.allowRepositoryActions ? "Allowed" : "Blocked"}</span></div>
+        <div class="setting-row"><div><b>Alfresco folder rules</b><small>Automation for future content in governed folders.</small></div><span class="setting-state ${policy.allowFolderRules ? "good" : "caution"}">${policy.allowFolderRules ? "Allowed" : "Blocked"}</span></div>
+        <div class="setting-row"><div><b>Custom Alfresco actions</b><small>Repository-defined operations outside Curator's built-in tools.</small></div><span class="setting-state ${policy.allowRepositoryActions ? "caution" : "good"}">${policy.allowRepositoryActions ? "Allowed" : "Blocked"}</span></div>
       </section>
       <section class="governance-panel" id="governance-controls" role="tabpanel" ${activeTab === "controls" ? "" : "hidden"}>
+        ${policySource}
         ${controls}
       </section>
       <section class="governance-panel" id="governance-audit" role="tabpanel" ${activeTab === "audit" ? "" : "hidden"}>
@@ -1255,6 +1269,8 @@ async function loadGovernance(activeTab = "overview") {
         tracing: $("traceToThirdParty").checked,
         changes: $("allowRepositoryChanges").checked,
         access: $("allowAccessChanges").checked,
+        content: $("allowContentChanges").checked,
+        folderRules: $("allowFolderRules").checked,
         actions: $("allowRepositoryActions").checked,
         budget: Number($("mutationBudget").value),
       });
@@ -1271,6 +1287,7 @@ async function loadGovernance(activeTab = "overview") {
       $("allowedModelHosts").addEventListener("input", updatePolicyWarning);
       form.addEventListener("input", updateDirty);
       form.addEventListener("change", updateDirty);
+      updateDirty();
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         save.disabled = true;
@@ -1284,11 +1301,13 @@ async function loadGovernance(activeTab = "overview") {
               trace_to_third_party: $("traceToThirdParty").checked,
               mutation_budget: Number($("mutationBudget").value),
               allow_repository_changes: $("allowRepositoryChanges").checked,
+              allow_content_changes: $("allowContentChanges").checked,
               allow_access_changes: $("allowAccessChanges").checked,
+              allow_folder_rules: $("allowFolderRules").checked,
               allow_repository_actions: $("allowRepositoryActions").checked,
             }),
           });
-          await loadGovernance("controls");
+          await loadGovernance("controls", "Policy saved and is now active.");
         } catch (error) {
           save.disabled = false;
           feedback.textContent = error.message;
@@ -1303,7 +1322,7 @@ async function loadGovernance(activeTab = "overview") {
         feedback.textContent = "Resetting and recording policy change…";
         try {
           await api("/api/governance/settings", { method: "DELETE" });
-          await loadGovernance("controls");
+          await loadGovernance("controls", "Deployment defaults restored.");
         } catch (error) {
           button.disabled = false;
           feedback.textContent = error.message;

@@ -151,7 +151,9 @@ class TestAuthGate:
                 "trace_to_third_party": True,
                 "mutation_budget": 8,
                 "allow_repository_changes": False,
+                "allow_content_changes": False,
                 "allow_access_changes": False,
+                "allow_folder_rules": False,
                 "allow_repository_actions": False,
             },
         )
@@ -163,7 +165,9 @@ class TestAuthGate:
         assert updated.json()["traceToThirdParty"] is True
         assert updated.json()["mutationBudget"] == 8
         assert updated.json()["allowRepositoryChanges"] is False
+        assert updated.json()["allowContentChanges"] is False
         assert updated.json()["allowAccessChanges"] is False
+        assert updated.json()["allowFolderRules"] is False
         assert updated.json()["allowRepositoryActions"] is False
         assert policy_path.exists()
         changes = [row for row in governance.get_ledger().read() if row["kind"] == "policy_change"]
@@ -176,9 +180,62 @@ class TestAuthGate:
         assert reset.json()["traceToThirdParty"] is tracing_default
         assert reset.json()["mutationBudget"] == budget_default
         assert reset.json()["allowRepositoryChanges"] is True
+        assert reset.json()["allowContentChanges"] is True
         assert reset.json()["allowAccessChanges"] is True
+        assert reset.json()["allowFolderRules"] is True
         assert reset.json()["allowRepositoryActions"] is True
         assert not policy_path.exists()
+
+    def test_legacy_repository_action_update_also_gates_folder_rules(
+        self, client: TestClient, monkeypatch, tmp_path
+    ):
+        policy_path = tmp_path / "governance-policy.json"
+        admin_group = get_settings().governance.admin_groups[0]
+        monkeypatch.setattr(AlfrescoClient, "get_person_groups", lambda _client: [admin_group])
+        monkeypatch.setattr(
+            "alfresco_curator.governance.policy._policy_path", lambda _settings=None: policy_path
+        )
+        connect_with_ticket(client)
+
+        response = client.put(
+            "/api/governance/settings",
+            json={
+                "allowed_model_hosts": [],
+                "minimise_metadata": False,
+                "allow_repository_actions": False,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["allowRepositoryActions"] is False
+        assert response.json()["allowFolderRules"] is False
+
+    def test_legacy_repository_action_update_preserves_stricter_folder_rule_gate(
+        self, client: TestClient, monkeypatch, tmp_path
+    ):
+        policy_path = tmp_path / "governance-policy.json"
+        admin_group = get_settings().governance.admin_groups[0]
+        monkeypatch.setattr(AlfrescoClient, "get_person_groups", lambda _client: [admin_group])
+        monkeypatch.setattr(
+            "alfresco_curator.governance.policy._policy_path", lambda _settings=None: policy_path
+        )
+        governance.write_policy_override(
+            [], False, allow_folder_rules=False, allow_repository_actions=True
+        )
+        connect_with_ticket(client)
+
+        response = client.put(
+            "/api/governance/settings",
+            json={
+                "allowed_model_hosts": [],
+                "minimise_metadata": False,
+                "allow_repository_actions": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["allowRepositoryActions"] is True
+        assert response.json()["allowFolderRules"] is False
 
     def test_new_allowlist_blocks_an_already_compiled_deep_agent(
         self, client: TestClient, monkeypatch, tmp_path

@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from alfresco_curator.agent.actions import MUTATING_TOOLS
+from alfresco_curator.agent.capabilities import MUTATING_CAPABILITIES
 from alfresco_curator.config import GovernanceSettings, LLMSettings, Settings
 from alfresco_curator.governance import policy
 from alfresco_curator.governance.ledger import GENESIS, Ledger
@@ -146,7 +148,9 @@ class TestPolicyOverride:
             trace_to_third_party=True,
             mutation_budget=7,
             allow_repository_changes=False,
+            allow_content_changes=False,
             allow_access_changes=False,
+            allow_folder_rules=False,
             allow_repository_actions=False,
         )
 
@@ -156,7 +160,9 @@ class TestPolicyOverride:
             "trace_to_third_party": True,
             "mutation_budget": 7,
             "allow_repository_changes": False,
+            "allow_content_changes": False,
             "allow_access_changes": False,
+            "allow_folder_rules": False,
             "allow_repository_actions": False,
             "overridden": True,
         }
@@ -175,7 +181,9 @@ class TestPolicyOverride:
             "trace_to_third_party": False,
             "mutation_budget": 25,
             "allow_repository_changes": True,
+            "allow_content_changes": True,
             "allow_access_changes": True,
+            "allow_folder_rules": True,
             "allow_repository_actions": True,
             "overridden": False,
         }
@@ -212,6 +220,31 @@ class TestChangeGates:
                 {"allow_repository_actions": False},
                 "Alfresco repository actions are disabled",
             ),
+            (
+                "add_tag",
+                {"allow_content_changes": False},
+                "Document and folder changes are disabled",
+            ),
+            (
+                "restore_deleted_node",
+                {"allow_content_changes": False},
+                "Document and folder changes are disabled",
+            ),
+            (
+                "revert_version",
+                {"allow_content_changes": False},
+                "Document and folder changes are disabled",
+            ),
+            (
+                "add_comment",
+                {"allow_content_changes": False},
+                "Document and folder changes are disabled",
+            ),
+            (
+                "create_folder_rule",
+                {"allow_folder_rules": False},
+                "Alfresco folder-rule changes are disabled",
+            ),
             ("create_folder", {}, ""),
         ],
     )
@@ -219,3 +252,23 @@ class TestChangeGates:
         monkeypatch.setattr(policy, "effective_policy", lambda: settings)
 
         assert policy.change_denial(action).startswith(expected)
+
+    def test_legacy_repository_action_override_also_blocks_folder_rules(self, tmp_path):
+        policy_path = tmp_path / "policy.json"
+        settings = Settings(
+            _env_file=None,
+            governance=GovernanceSettings(_env_file=None, policy_path=str(policy_path)),
+        )
+        policy_path.write_text('{"allow_repository_actions": false}', encoding="utf-8")
+
+        assert policy.effective_policy(settings)["allow_folder_rules"] is False
+
+    def test_every_builtin_mutation_has_a_governance_category(self):
+        mutation_names = set(MUTATING_TOOLS) | set(MUTATING_CAPABILITIES)
+        governed_names = (
+            policy.CONTENT_CHANGE_ACTIONS
+            | policy.ACCESS_CHANGE_ACTIONS
+            | {"create_folder_rule", "run_action"}
+        )
+
+        assert mutation_names <= governed_names

@@ -24,6 +24,8 @@ sentence, with no mode to set first.
 [Inside Share and ADW](#inside-share-and-digital-workspace) ·
 [API](#rest-api) · [Layout](#project-layout) · [Development](#development)
 
+**First tour:** [start with Community](#quick-start) → [follow a request](#how-it-works) → [explore approval and policy](#explore-the-approval-flow).
+
 ## Why
 
 Enterprise search fails in three ways, and users cannot tell them apart: the
@@ -43,18 +45,49 @@ the repository, not the model.
 
 ## Quick start
 
-Requires Docker with ~8 GB available, and a `quay.io` login for the Enterprise
-images.
+The fastest public demo uses Alfresco Community. You need Docker with about
+8 GB of memory available and a working LLM key or endpoint. Compose pulls the
+repository, search, and transform images. Curator downloads its local embedding
+model on the first contextual-suggestion request.
 
-```powershell
-Copy-Item .env.example .env     # add your LLM key
-docker login quay.io
-docker compose -f docker/docker-compose.yml up -d
-```
+1. Copy the configuration template:
 
-That is the whole setup. Compose builds both custom images, starts ten
-services and seeds the demo content — nothing is copied into a running
-container.
+  ```powershell
+  Copy-Item .env.example .env
+  ```
+
+2. Edit `.env` to select the Community image and configure a model provider:
+
+  ```ini
+  ALFRESCO_REPO_IMAGE=alfresco/alfresco-content-repository-community:26.2.0
+  OPENAI_API_KEY=your-key
+  ```
+
+  Keep the default `LLM_PROVIDER=openai` for the example above. You can also
+  configure another supported provider or an OpenAI-compatible endpoint.
+
+3. Build and start the stack:
+
+  ```powershell
+  docker compose -f docker/docker-compose.yml up -d --build
+  ```
+
+  Compose builds Curator and Share, starts the repository/search stack, and
+  seeds the demo user and sample content automatically. Wait until the
+  services report healthy:
+
+  ```powershell
+  docker compose -f docker/docker-compose.yml ps
+  ```
+
+For the Enterprise repository image, leave `ALFRESCO_REPO_IMAGE` at its
+default and run `docker login quay.io` first. Without a mounted licence, that
+image runs on a two-day trial. Containers may start without an LLM key, but
+Curator cannot complete model-backed requests until a provider is configured.
+
+For a safe first request, ask Curator:
+
+> Find approved S3 connector specifications in Engineering. Show names and paths only.
 
 | Surface | URL | Credentials |
 | --- | --- | --- |
@@ -63,10 +96,9 @@ container.
 | Curator standalone | <http://localhost:8600> | `admin` / `admin` |
 | Alfresco REST API | <http://localhost:8080/alfresco> | `admin` / `admin` |
 
-> **Licence.** The Enterprise repository runs on a **2-day trial** when no
-> licence is mounted. `docker compose down -v && up -d` re-issues it. For
-> longer, mount a real licence or pin Community with
-> `ALFRESCO_REPO_IMAGE=alfresco/alfresco-content-repository-community:26.2.0`.
+> **Demo data is local.** Compose seeds `demo.analyst` and sample documents in
+> its Alfresco volumes. `docker compose down -v` deletes those volumes and the
+> seeded repository data; avoid it if you want to keep your demo state.
 
 ## How it works
 
@@ -121,6 +153,21 @@ default, but a prompt that produces two hundred cards turns review into
 clicking, and clicking into consent. Past the limit, changes are refused with a
 reason. The budget is charged *before* the call, so a refused change costs
 nothing and a failing tool cannot walk past the limit by retrying.
+
+#### Explore the approval flow
+
+![Static preview of Curator's governed approval flow](docs/diagrams/curator-approval-flow.visual-check.1440x900.light.png)
+
+GitHub shows this static preview; it does not run the interactive viewer inside
+the README. After cloning, open the [interactive diagram](docs/diagrams/curator-approval-flow.html)
+in a browser to use guided chapters for **Prepare proposal**, **Approval +
+policy**, and **Execute + audit**, switch themes, pan/zoom, or play the optional
+trace animation. Its [sequence source](docs/diagrams/curator-approval-flow.sequence.json)
+is kept beside the generated viewer. From the repository root in PowerShell:
+
+```powershell
+Start-Process docs/diagrams/curator-approval-flow.html
+```
 
 ### Knowing what you are pointing at
 
@@ -228,7 +275,9 @@ case numbers. The claim is *data-minimised*, never *anonymous*.
 | **Minimisation** | Withholds `cm:title` and `cm:description` from the model |
 | **Tracing** | LangSmith prompt/tool tracing is controlled per model run |
 | **Global change pause** | Blocks all repository changes, including already-pending approvals |
-| **Sharing and access gate** | Separately blocks Curator's named share links, permissions, groups, sites, and membership tools; disable custom actions too for broader coverage |
+| **Document and folder operations** | Separately blocks create, rename, move, copy, delete, restore, version, lock, tag, comment, favorite, aspect, and metadata operations |
+| **Sharing and access gate** | Separately blocks Curator's named share links, permissions, groups, sites, and membership tools |
+| **Folder-rule gate** | Blocks creation of Alfresco rules that automate work on future folder content |
 | **Custom-action gate** | Controls repository-defined actions that can perform operations beyond Curator's named tools |
 | **Mutation budget** | Caps proposed writes per conversation; the updated limit applies immediately |
 | **ACL inheritance** | Every query and probe runs on the signed-in user's own ticket |
@@ -243,10 +292,10 @@ does not grant its own authority.
 
 Authorized operators can manage **AI and data** controls separately from
 **Repository changes** in the compact **Overview / Controls / Audit** view.
-They can pause all proposed changes, block sharing/access changes, or disable
-custom repository actions without disabling read-only discovery. Each change
-still requires individual human approval; that safeguard cannot be switched
-off. The policy is atomically written to
+They can pause all proposed changes, independently block content and folder
+edits, sharing/access changes, folder-rule automation, or custom repository
+actions without disabling read-only discovery. Each change still requires
+individual human approval; that safeguard cannot be switched off. The policy is atomically written to
 `GOVERNANCE_POLICY_PATH` on the governance volume, and each requested/applied
 change is recorded in the hash-chained ledger. A policy change that restricts
 the active model host blocks subsequent model-backed
@@ -258,7 +307,7 @@ cannot proceed through a stale agent or pending approval.
 
 The `GOVERNANCE_*` values in `.env` remain the deployment defaults. After an
 operator saves through the UI, the durable volume override takes precedence
-until **Restore defaults** is selected. Tracing and the mutation budget take
+until **Use deployment defaults** is selected. Tracing and the mutation budget take
 effect on subsequent calls, including existing conversations.
 
 ### The ledger
@@ -450,7 +499,7 @@ share-ui/        Surf page, doclib action, Share launcher
 scripts/         demo/ rehearsal · dev/ probes · deployment checks
 evals/           scored suites
 tests/           484 unit tests
-docs/diagrams/   generated — edit generate.py, not the output
+docs/diagrams/   SVGs: generate.py · interactive Archify specs + HTML viewers
 ```
 
 ## LLM provider

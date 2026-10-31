@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "A change, approved and governed",
+    "locale": "en",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [1080, 650],
+    "views": [
+      {
+        "id": "proposal",
+        "label": "Prepare proposal",
+        "focus": ["user", "ui", "curator", "model", "alfresco"],
+        "note": "Curator resolves the target and presents one specific Alfresco operation."
+      },
+      {
+        "id": "approval-gate",
+        "label": "Approval + policy",
+        "focus": ["user", "ui", "curator", "policy"],
+        "note": "The user approves the operation; the server checks policy again before execution."
+      },
+      {
+        "id": "execute-and-audit",
+        "label": "Execute + audit",
+        "focus": ["curator", "policy", "alfresco", "ledger", "ui"],
+        "note": "Only an allowed operation reaches Alfresco, and its outcome is recorded."
+      }
+    ]
+  },
+  "participants": [
+    { "id": "user", "type": "external", "label": "Alfresco user", "sublabel": "signed in" },
+    { "id": "ui", "type": "frontend", "label": "Share / UI", "sublabel": "ask + approve" },
+    { "id": "curator", "type": "backend", "label": "Curator API", "sublabel": "route + tools" },
+    { "id": "model", "type": "cloud", "label": "Approved model", "sublabel": "plan proposal" },
+    { "id": "alfresco", "type": "backend", "label": "Alfresco", "sublabel": "REST + AFTS" },
+    { "id": "policy", "type": "security", "label": "Policy", "sublabel": "governance gate + budget" },
+    { "id": "ledger", "type": "database", "label": "Ledger", "sublabel": "hash-chained decisions" }
+  ],
+  "segments": [
+    { "from": 150, "to": 265, "label": "Resolve + propose" },
+    { "from": 270, "to": 420, "label": "Review + gate" },
+    { "from": 425, "to": 600, "label": "Execute + record" }
+  ],
+  "messages": [
+    { "id": "request", "from": "user", "to": "ui", "y": 160, "label": "Ask: create a folder rule", "variant": "emphasis" },
+    { "id": "submit", "from": "ui", "to": "curator", "y": 189, "label": "Submit request + session", "variant": "default" },
+    { "id": "plan", "from": "curator", "to": "model", "y": 218, "label": "Plan from allowed metadata", "variant": "default" },
+    { "id": "proposal", "from": "model", "to": "curator", "y": 247, "label": "Proposed operation", "variant": "return" },
+    { "id": "resolve", "from": "curator", "to": "alfresco", "y": 276, "label": "Resolve folder + inspect rule actions", "variant": "default" },
+    { "id": "folder-evidence", "from": "alfresco", "to": "curator", "y": 305, "label": "ACL-visible folder + action definition", "variant": "return" },
+    { "id": "present", "from": "curator", "to": "ui", "y": 334, "label": "Present exact rule for review", "variant": "emphasis" },
+    { "id": "approve", "from": "user", "to": "ui", "y": 363, "label": "Approve this operation", "variant": "security" },
+    { "id": "resume", "from": "ui", "to": "curator", "y": 392, "label": "Resume with approval", "variant": "security" },
+    { "id": "gate", "from": "curator", "to": "policy", "y": 421, "label": "Check gates + mutation budget", "variant": "security" },
+    { "id": "allowed", "from": "policy", "to": "curator", "y": 450, "label": "Allowed / denied", "variant": "return" },
+    { "id": "write", "from": "curator", "to": "alfresco", "y": 479, "label": "Create approved folder rule", "variant": "security" },
+    { "id": "write-result", "from": "alfresco", "to": "curator", "y": 508, "label": "Rule id + result", "variant": "return" },
+    { "id": "audit", "from": "curator", "to": "ledger", "y": 537, "label": "Record decision + outcome", "variant": "dashed" },
+    { "id": "report", "from": "curator", "to": "ui", "y": 566, "label": "Show status + recovery options", "variant": "emphasis" }
+  ],
+  "activations": [
+    { "participant": "ui", "from": 180, "to": 410, "type": "frontend" },
+    { "participant": "curator", "from": 180, "to": 580, "type": "backend" },
+    { "participant": "model", "from": 212, "to": 253, "type": "cloud" },
+    { "participant": "alfresco", "from": 270, "to": 311, "type": "backend" },
+    { "participant": "policy", "from": 415, "to": 456, "type": "security" },
+    { "participant": "alfresco", "from": 473, "to": 514, "type": "backend" },
+    { "participant": "ledger", "from": 532, "to": 548, "type": "database" }
+  ]
+}
