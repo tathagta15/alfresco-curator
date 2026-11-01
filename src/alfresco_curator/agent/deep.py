@@ -218,22 +218,17 @@ def build_deep_agent(
     ledger = audit or AuditLog()
     tools.extend(build_capability_tools(client, ledger, allow_writes=allow_writes))
     prompt = SYSTEM_PROMPT
-    interrupt_on: dict[str, Any] | None = None
     if allow_writes:
         action_tools = [
             tool for tool in build_action_tools(client, ledger) if not change_denial(tool.name)
         ]
         tools = [*tools, *action_tools]
         prompt = f"{SYSTEM_PROMPT}\n{ACTION_RULES}"
-        # Only mutations pause for approval. Interrupting reads too would mean
-        # a click per probe, and nobody would read the ones that matter.
-        tool_names = {tool.name for tool in tools}
-        interrupt_on = {
-            name: True for name in (*MUTATING_TOOLS, *MUTATING_CAPABILITIES) if name in tool_names
-        }
     else:
         prompt = f"{SYSTEM_PROMPT}\n{READ_ONLY_TURN}"
 
+    # Only mutations pause for approval. Interrupting reads too would mean a
+    # click per probe, and nobody would read the ones that matter.
     tool_names = {tool.name for tool in tools}
     interrupt_on = {
         name: True for name in (*MUTATING_TOOLS, *MUTATING_CAPABILITIES) if name in tool_names

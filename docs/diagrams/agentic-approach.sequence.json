@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "How Curator makes an ask agentic and safe",
+    "locale": "en",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [1080, 650],
+    "views": [
+      {
+        "id": "deterministic-search",
+        "label": "Deterministic route + search",
+        "focus": ["user", "router", "search", "model", "alfresco"],
+        "note": "The route is deterministic; the search graph gathers repository evidence before answering."
+      },
+      {
+        "id": "agentic-tool-loop",
+        "label": "Agentic tool loop",
+        "focus": ["router", "deep", "model", "alfresco"],
+        "note": "For explore and act, the model plans a step, chooses an allowed tool, and reasons over its result."
+      },
+      {
+        "id": "human-gated-action",
+        "label": "Human-gated action",
+        "focus": ["user", "deep", "approval", "alfresco"],
+        "note": "Mutations pause for per-operation approval, then pass an execution-time policy check."
+      }
+    ]
+  },
+  "participants": [
+    { "id": "user", "type": "external", "label": "User", "sublabel": "signed in" },
+    { "id": "router", "type": "backend", "label": "Intent router", "sublabel": "lexical + context" },
+    { "id": "search", "type": "backend", "label": "Search graph", "sublabel": "fixed ladder" },
+    { "id": "deep", "type": "backend", "label": "Deep agent", "sublabel": "model-led tool loop" },
+    { "id": "model", "type": "cloud", "label": "Model", "sublabel": "approved endpoint" },
+    { "id": "alfresco", "type": "backend", "label": "Alfresco", "sublabel": "AFTS + user ACL" },
+    { "id": "approval", "type": "security", "label": "Approval gate", "sublabel": "person + policy" }
+  ],
+  "segments": [
+    { "from": 145, "to": 205, "label": "Classify once" },
+    { "from": 210, "to": 345, "label": "Search route" },
+    { "from": 350, "to": 550, "label": "Explore / act tool loop" }
+  ],
+  "messages": [
+    { "id": "ask", "from": "user", "to": "router", "y": 160, "label": "Plain-language ask + Share context", "variant": "emphasis" },
+    { "id": "route", "from": "router", "to": "user", "y": 188, "label": "Route + reason; clarify unresolved targets", "variant": "return" },
+    { "id": "search-route", "from": "router", "to": "search", "y": 216, "label": "Search: deterministic evidence ladder", "variant": "emphasis" },
+    { "id": "query-plan", "from": "search", "to": "model", "y": 244, "label": "Translate request to AFTS", "variant": "default" },
+    { "id": "query", "from": "model", "to": "search", "y": 272, "label": "AFTS query", "variant": "return" },
+    { "id": "probe", "from": "search", "to": "alfresco", "y": 300, "label": "Search + staged probes", "variant": "default" },
+    { "id": "evidence", "from": "alfresco", "to": "search", "y": 328, "label": "ACL-scoped evidence", "variant": "return" },
+    { "id": "search-answer", "from": "search", "to": "user", "y": 356, "label": "Grounded result or diagnosis", "variant": "emphasis" },
+    { "id": "deep-route", "from": "router", "to": "deep", "y": 384, "label": "Explore / act: tools vary by route", "variant": "emphasis" },
+    { "id": "reason", "from": "deep", "to": "model", "y": 412, "label": "Plan + choose the next tool", "variant": "default" },
+    { "id": "tool-call", "from": "model", "to": "deep", "y": 440, "label": "Structured tool call", "variant": "return" },
+    { "id": "read-tool", "from": "deep", "to": "alfresco", "y": 468, "label": "Read / resolve target", "variant": "default" },
+    { "id": "tool-result", "from": "alfresco", "to": "deep", "y": 496, "label": "Repository evidence", "variant": "return" },
+    { "id": "propose", "from": "deep", "to": "approval", "y": 524, "label": "Act only: exact mutation pauses for approval", "variant": "security" },
+    { "id": "final", "from": "deep", "to": "user", "y": 552, "label": "Answer + trace; undo uses session history", "variant": "emphasis" }
+  ],
+  "activations": [
+    { "participant": "router", "from": 156, "to": 392, "type": "backend" },
+    { "participant": "search", "from": 210, "to": 362, "type": "backend" },
+    { "participant": "model", "from": 238, "to": 282, "type": "cloud" },
+    { "participant": "alfresco", "from": 294, "to": 338, "type": "backend" },
+    { "participant": "deep", "from": 378, "to": 560, "type": "backend" },
+    { "participant": "model", "from": 406, "to": 450, "type": "cloud" },
+    { "participant": "alfresco", "from": 462, "to": 506, "type": "backend" },
+    { "participant": "approval", "from": 518, "to": 534, "type": "security" }
+  ]
+}
